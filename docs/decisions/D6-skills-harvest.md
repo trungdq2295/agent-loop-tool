@@ -25,6 +25,12 @@ Date: 2026-07-04 · Owner-approved
   needed. Push (skill) reserved for procedures that MUST not be
   forgotten; pull (learnings) for everything else
 
+## Extension (D7, 2026-07-04)
+
+Harvest also mines failure logs for VERIFIER weaknesses and stages
+verify.sh upgrade proposals — same staged-approval path as skills.
+Applied between runs only; new snapshot at next freeze.
+
 ## Owner note (startup mode)
 
 Make it work first, optimize cost later. v1 quality bar = correctness
