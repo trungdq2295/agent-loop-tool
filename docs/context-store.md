@@ -71,9 +71,10 @@ project/.loop/learnings/
 
 ```
 iteration learnings → .loop/learnings/ (working memory)
-feature done:
+feature done (harvest step — see harvest-step.md):
   durable project truths → promote to CLAUDE.md/AGENTS.md (human approves)
   stack-level truths     → promote to ~/loop-tool/learnings/
+  procedural, recurred   → DRAFT skill → .claude/skills-proposed/ (human approves to live)
   the rest               → archive .loop/archive/<feature>/ (never auto-read)
 PRD.md → stays; future PRD sessions read past PRDs for product context
 ```
