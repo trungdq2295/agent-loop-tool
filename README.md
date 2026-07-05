@@ -5,7 +5,7 @@ session per iteration; state lives in files; an objective verifier — outside
 the agent's control — gates every iteration.
 
 ```
-┌─> fresh agent reads .loop/prd.json + LEARNINGS.md + git log
+┌─> fresh agent reads .loop/prd.json + .loop/learnings/ + git log
 │   does ONE story: failing test first → implement → green → commit
 │   flips that story's passes flag (a claim, not a verdict)
 │   agent exits, memory gone
@@ -13,25 +13,70 @@ the agent's control — gates every iteration.
 └── exit only when ALL stories pass AND verify is green
 ```
 
-## Setup (once per project)
+## Usage
+
+Requires `claude` CLI, `jq`, and git. The target project must have an
+objective check to gate on (tests / typecheck / lint / build) — the tool is
+only as trustworthy as its `verify.sh`.
+
+The tool has four subcommands, run in order. `PROJECT` is the path to the
+repo you're working on.
+
+### 1. `init` — scaffold (once per feature)
 
 ```bash
-mkdir my-project/.loop
-cp templates/PROMPT.md templates/LEARNINGS.md my-project/.loop/
-cp templates/verify.sh my-project/.loop/   # edit: this project's real checks
-chmod +x my-project/.loop/verify.sh
-cp templates/prd.json my-project/.loop/    # edit: stories + acceptance criteria
+loop.sh init PROJECT
 ```
 
-## Run
+Creates `PROJECT/.loop/` from templates (`PROMPT.md`, `verify.sh`) and adds
+the loop's runtime artifacts to the project's `.gitignore`. Refuses if
+`.loop/` already exists — remove a stale one first.
+
+**Then edit `PROJECT/.loop/verify.sh`** — fill Block 1 with this project's
+real health checks (e.g. `npm test`, `npm run typecheck`, `npm run lint`).
+This is the exam the agent can't touch.
+
+### 2. `prd` — plan the work (interactive)
 
 ```bash
-./loop.sh ~/code/my-project 15        # max 15 iterations
-LOOP_MAX_TURNS=60 ./loop.sh ~/code/my-project
+loop.sh prd PROJECT
 ```
 
-Requires: `claude` CLI, `jq`, clean git tree. Refuses to run on main/master —
-auto-creates a `loop/run-*` branch. Bad run = delete branch.
+Opens an interactive session: describe the feature in plain language, the
+agent drafts stories + acceptance criteria, reads them back, and you say
+**"approved"** when they're right. On approval the criteria and `verify.sh`
+are checksum-frozen. This phase needs you at the keyboard.
+
+### 3. `run` — the unattended loop
+
+```bash
+loop.sh run PROJECT            # default cap: 25 iterations
+loop.sh run PROJECT 15         # cap at 15 iterations
+```
+
+One fresh session per iteration, one story at a time, verify after each,
+until every story is done or a cap/breaker stops it. Refuses a dirty tree
+(`.loop/` is exempt) and refuses to run on `main`/`master` — it checks out
+the branch named in the PRD. Writes `.loop/REPORT.md` on every exit.
+
+### 4. `harvest` — capture lessons (optional)
+
+```bash
+loop.sh harvest PROJECT
+```
+
+A read-only session that turns the run's expensive mistakes into draft
+skills under `.claude/skills-proposed/`. Nothing goes live — you approve
+drafts into `.claude/skills/` yourself.
+
+### Common knobs
+
+```bash
+LOOP_MAX_TURNS=60 loop.sh run PROJECT     # per-iteration turn cap (default 80)
+LOOP_MODEL_EXEC=opus loop.sh run PROJECT  # iteration model (default sonnet)
+```
+
+Bad run? The work is on its own branch — just delete it.
 
 ## Guarantees
 
