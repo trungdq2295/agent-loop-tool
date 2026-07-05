@@ -1,0 +1,51 @@
+name: Release
+
+# Auto-create an incremented tag + GitHub release on every merge to main,
+# so users pin a tag (git clone --branch vX.Y.Z) instead of a raw commit.
+# The bump is derived from Conventional Commit messages since the last tag:
+#   fix:             -> patch
+#   feat:            -> minor
+#   feat! / BREAKING -> major
+#   (no conventional commit) -> patch (default_bump)
+#
+# Same pattern as c4-model-builder's release workflow.
+#
+# ── REQUIRES (owner / admin, one-time) ──────────────────────────────────────
+#   Settings -> Actions -> General -> Workflow permissions -> "Read and write
+#   permissions" (lets GITHUB_TOKEN push tags + create releases).
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push tags + create releases
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the next version is computed from tags
+
+      - name: Compute next version
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          tag_prefix: v
+
+      - name: Create GitHub release
+        if: steps.tag.outputs.new_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.new_tag }}
+          name: ${{ steps.tag.outputs.new_tag }}
+          body: ${{ steps.tag.outputs.changelog }}
+          generate_release_notes: true
