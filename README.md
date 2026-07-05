@@ -13,6 +13,33 @@ the agent's control — gates every iteration.
 └── exit only when ALL stories pass AND verify is green
 ```
 
+## What "Ralph-style" means
+
+Ralph is a loop pattern for coding agents (popularized by Geoffrey
+Huntley): run the agent in a plain `while` loop where **each iteration is
+a fresh, throwaway session** and the **only memory that survives between
+iterations is files + git** — never conversation history.
+
+Every iteration wakes up blank, reads the current state off disk, does one
+small unit of work, commits, and dies. The next one starts clean. Three
+consequences this tool is built around:
+
+- **No context rot.** A fresh session can't accumulate stale history,
+  hallucinated state, or a 200K-token transcript. It reasons only over
+  what's actually on disk right now.
+- **The driver is dumb bash.** It spawns, checks, counts, and decides
+  mechanically — zero intelligence, nothing to persuade, no tokens spent.
+  All the smarts live in the agent (does the work) and the files (hold the
+  truth).
+- **Files are the baton.** `prd.json` records what's done, `learnings/`
+  what was discovered, git commits the work itself. A session cut off
+  mid-story loses only since-last-commit work — the next fresh session
+  resumes from the files, it doesn't restart.
+
+This tool is a hardened version of that pattern: it adds an objective
+`verify.sh` the agent can't touch, checksum-frozen acceptance criteria,
+and a circuit breaker — the guardrails a bare Ralph loop leaves out.
+
 ## Setup (once per project)
 
 ```bash
