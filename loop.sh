@@ -153,10 +153,15 @@ cmd_run() {
   mkdir -p "$LOGS"
   cd "$PROJECT"
 
-  # Ring 2 (harness §1): isolation. P5 hard-refuses a dirty tree, but
-  # .loop/ is driver/agent state that churns every phase — exempt it,
-  # or the tool's own artifacts (REPORT.md, test-count, ...) block runs.
-  [ -z "$(git status --porcelain -- ':(exclude).loop')" ] || die "working tree dirty — commit or stash first (.loop/ is exempt)"
+  # Ring 2 (harness §1): isolation. P5 refuses a dirty tree so a bad run
+  # is cleanly discardable. Two carve-outs:
+  #   - .loop/ is driver/agent state that churns every phase.
+  #   - untracked files don't threaten isolation: a branch delete leaves
+  #     them untouched, and if the agent sweeps one into a commit it dies
+  #     with the discardable branch. Only MODIFIED TRACKED files are
+  #     unsaved work we'd risk mixing/losing — those still hard-refuse.
+  [ -z "$(git status --porcelain --untracked-files=no -- ':(exclude).loop')" ] \
+    || die "working tree has uncommitted tracked changes — commit or stash first (.loop/ and untracked files are exempt)"
   BRANCH="$(git rev-parse --abbrev-ref HEAD)"
   case "$BRANCH" in
     main|master)
