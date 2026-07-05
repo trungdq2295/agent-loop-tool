@@ -26,6 +26,9 @@ during loop   mistakes recorded free-form: failure logs, attempts
 feature done  loop.sh harvest → LIBRARIAN session (cheap model, read-only
               on code; writes only knowledge artifacts)
               reads: .loop/learnings/, logs/, blocked stories, attempts
+              driver INJECTS failure evidence into the prompt — stories
+              with attempts ≥2 + fail-log tails, mined FIRST (owner
+              call 2026-07-05: failure-driven promotion)
               classifies each item:
                 one-off fact           → learnings page (project or global)
                 repeated OR procedural → DRAFT skill → .claude/skills-proposed/
