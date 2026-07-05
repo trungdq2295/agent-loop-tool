@@ -40,6 +40,13 @@ SUM_FILE="$LOOP_DIR/criteria.sum"
 LOGS="$LOOP_DIR/logs"
 REPORT="$LOOP_DIR/REPORT.md"
 
+# Auto-shelve state (JetBrains-shelf style): the owner's uncommitted work is
+# saved to this dedicated ref — off the stash stack so it can't be popped by
+# accident and is safe from GC — then restored on exit. Set in cmd_run.
+SHELF_REF="refs/loop-tool/shelf"
+SHELF_SHA=""       # populated only when something was shelved
+ORIG_BRANCH=""     # branch to return the owner to
+
 # Skill included so harvest-promoted skills (.claude/skills/) can fire
 # in future loop sessions — push-based recall (harvest-step.md).
 ALLOWED_TOOLS="${LOOP_TOOLS:-Edit,Write,Read,Bash,Glob,Grep,Skill}"
@@ -61,6 +68,25 @@ verify_sum()   { shasum -a 256 "$VERIFY" | cut -d' ' -f1; }
 prd_set() { # prd_set <jq-filter> [--arg k v ...]
   local filter="$1"; shift
   jq "$@" "$filter" "$PRD_JSON" > "$PRD_JSON.tmp" && mv "$PRD_JSON.tmp" "$PRD_JSON"
+}
+
+# Restore the owner's auto-shelved work. Runs from an EXIT trap so it fires on
+# every path — success, circuit-break, tamper-kill, or crash. Never loses data:
+# if the apply hits a conflict the shelf ref is left in place with recovery
+# instructions. Restore is conflict-free in the common case because the loop's
+# commits land on a separate branch, so ORIG_BRANCH's tree is unchanged since
+# shelve time.
+unshelf() {
+  [ -n "$SHELF_SHA" ] || return 0
+  git checkout -q "$ORIG_BRANCH" 2>/dev/null || true
+  if git stash apply -q "$SHELF_SHA" 2>/dev/null; then
+    git update-ref -d "$SHELF_REF" 2>/dev/null || true
+    echo "loop: restored your shelved work on $ORIG_BRANCH"
+  else
+    echo "loop: WARN could not cleanly restore shelved work — it is SAFE at $SHELF_REF." >&2
+    echo "loop:   recover with: git stash apply $SHELF_REF" >&2
+  fi
+  SHELF_SHA=""
 }
 
 # --------------------------------------------------------------- init ------
@@ -153,16 +179,26 @@ cmd_run() {
   mkdir -p "$LOGS"
   cd "$PROJECT"
 
-  # Ring 2 (harness §1): isolation. P5 refuses a dirty tree so a bad run
-  # is cleanly discardable. Two carve-outs:
-  #   - .loop/ is driver/agent state that churns every phase.
-  #   - untracked files don't threaten isolation: a branch delete leaves
-  #     them untouched, and if the agent sweeps one into a commit it dies
-  #     with the discardable branch. Only MODIFIED TRACKED files are
-  #     unsaved work we'd risk mixing/losing — those still hard-refuse.
-  [ -z "$(git status --porcelain --untracked-files=no -- ':(exclude).loop')" ] \
-    || die "working tree has uncommitted tracked changes — commit or stash first (.loop/ and untracked files are exempt)"
-  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  # Ring 2 (harness §1): isolation. Instead of refusing a dirty tree, we
+  # auto-shelve the owner's uncommitted work (JetBrains "shelve" style) so a
+  # run is never blocked — and restore it on exit. .loop/ is EXCLUDED from the
+  # shelf: it's driver/agent state the run needs on disk (prd.json, PROMPT.md,
+  # verify.sh, learnings) — shelving it would break the run and hide the PRD.
+  ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  if git rev-parse --verify -q "$SHELF_REF" >/dev/null; then
+    die "a previous shelf exists at $SHELF_REF (a prior run likely crashed mid-restore).
+     Recover it first:  git stash apply $SHELF_REF  &&  git update-ref -d $SHELF_REF"
+  fi
+  if [ -n "$(git status --porcelain -- . ':(exclude).loop')" ]; then
+    git stash push --include-untracked -q -m "loop-tool auto-shelf" -- . ':(exclude).loop'
+    git update-ref "$SHELF_REF" "$(git rev-parse stash@{0})"  # keep alive off-stack
+    SHELF_SHA="$(git rev-parse "$SHELF_REF")"
+    git stash drop -q                                         # clear the stash stack
+    trap unshelf EXIT
+    echo "loop: shelved your uncommitted work → $SHELF_REF (restored on exit)"
+  fi
+
+  BRANCH="$ORIG_BRANCH"
   case "$BRANCH" in
     main|master)
       BRANCH="$(jq -r '.branch' "$PRD_JSON")"

@@ -55,7 +55,7 @@ Settled today (harness.md, prd-step.md — driver enforces):
 | P2 | `--max-turns` per iteration | 80 | [D1](decisions/D1-caps-and-breaker.md) — typical story 35-75 turns |
 | P3 | Max iterations default | 25 (CLI-overridable) | [D1](decisions/D1-caps-and-breaker.md) — overnight-sized |
 | P4 | Criteria edited by agent | kill whole loop | [D2](decisions/D2-criteria-edit-kill.md) |
-| P5 | Dirty tree at start | refuse on modified TRACKED files; `.loop/` + untracked exempt | safer, discardable run; untracked files don't threaten isolation (branch delete leaves them) |
+| P5 | Dirty tree at start | auto-shelve the owner's uncommitted work (except `.loop/`), restore on exit | never blocks a run; restore is conflict-free because loop commits land on a separate branch; `.loop/` excluded so the PRD/verify state stays on disk |
 | P6 | Allowed tools | Edit,Write,Read,Bash,Glob,Grep | default accepted; Bash constrained by harness ring-1 DENY rules |
 
 ## Resume protocol (mid-story continuity — [D5](decisions/D5-resume-baton.md))
