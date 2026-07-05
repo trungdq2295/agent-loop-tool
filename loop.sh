@@ -10,11 +10,12 @@
 #   loop.sh harvest <project-dir>          Phase 3: librarian session
 #
 # Env overrides:
-#   LOOP_TOOLS           run-mode allowed tools (default: Edit,Write,Read,Bash,Glob,Grep)
+#   LOOP_TOOLS           run-mode allowed tools (default: Edit,Write,Read,Bash,Glob,Grep,Skill)
 #   LOOP_MAX_TURNS       per-iteration turn cap (default: 80, D1)
 #   LOOP_MODEL_EXEC      iteration model        (default: sonnet)
 #   LOOP_MODEL_ESCALATE  attempt-3 model        (default: opus)
 #   LOOP_MODEL_PRD       phase-0 model          (default: opus)
+#   LOOP_LIMIT_BACKOFF   sleep after usage-limit death, seconds (default: 1200)
 set -euo pipefail
 
 TOOL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,13 +40,16 @@ SUM_FILE="$LOOP_DIR/criteria.sum"
 LOGS="$LOOP_DIR/logs"
 REPORT="$LOOP_DIR/REPORT.md"
 
-ALLOWED_TOOLS="${LOOP_TOOLS:-Edit,Write,Read,Bash,Glob,Grep}"
+# Skill included so harvest-promoted skills (.claude/skills/) can fire
+# in future loop sessions — push-based recall (harvest-step.md).
+ALLOWED_TOOLS="${LOOP_TOOLS:-Edit,Write,Read,Bash,Glob,Grep,Skill}"
 MAX_TURNS="${LOOP_MAX_TURNS:-80}"           # D1
 MODEL_EXEC="${LOOP_MODEL_EXEC:-sonnet}"     # harness §5
 MODEL_ESCALATE="${LOOP_MODEL_ESCALATE:-opus}"
 MODEL_PRD="${LOOP_MODEL_PRD:-opus}"
 FAIL_LIMIT=3                                # D1: per-loop circuit breaker
 ATTEMPT_LIMIT=3                             # harness §4: per-story ladder
+LIMIT_BACKOFF="${LOOP_LIMIT_BACKOFF:-1200}" # usage-limit sleep before retry
 
 command -v jq >/dev/null     || die "jq required (brew install jq)"
 command -v claude >/dev/null || die "claude CLI required"
@@ -66,6 +70,12 @@ cmd_init() {
   cp "$TOOL_DIR/templates/PROMPT.md" "$LOOP_DIR/PROMPT.md"
   cp "$TOOL_DIR/templates/verify.sh" "$LOOP_DIR/verify.sh"
   chmod +x "$LOOP_DIR/verify.sh"
+  # Runtime artifacts churn every run — keep them out of git entirely.
+  # (prd.json / PRD.md / learnings stay tracked: they're the baton.)
+  if ! grep -q '^\.loop/logs/' "$PROJECT/.gitignore" 2>/dev/null; then
+    printf '\n# loop-tool runtime artifacts\n.loop/logs/\n.loop/REPORT.md\n.loop/BLOCKED.md\n.loop/test-count\n' >> "$PROJECT/.gitignore"
+    echo "loop: added runtime artifacts to .gitignore"
+  fi
   echo "loop: scaffolded $LOOP_DIR"
   echo "loop: EDIT $LOOP_DIR/verify.sh — fill Block 1 with this project's real checks"
   echo "loop: then run: loop.sh prd $PROJECT"
@@ -143,8 +153,10 @@ cmd_run() {
   mkdir -p "$LOGS"
   cd "$PROJECT"
 
-  # Ring 2 (harness §1): isolation.
-  [ -z "$(git status --porcelain)" ] || die "working tree dirty — commit or stash first"
+  # Ring 2 (harness §1): isolation. P5 hard-refuses a dirty tree, but
+  # .loop/ is driver/agent state that churns every phase — exempt it,
+  # or the tool's own artifacts (REPORT.md, test-count, ...) block runs.
+  [ -z "$(git status --porcelain -- ':(exclude).loop')" ] || die "working tree dirty — commit or stash first (.loop/ is exempt)"
   BRANCH="$(git rev-parse --abbrev-ref HEAD)"
   case "$BRANCH" in
     main|master)
@@ -182,6 +194,17 @@ $(tail -30 "$LOGS/verify-last-$SID.log")
     [ "$ATTEMPTS" -ge 2 ] && PROMPT_TEXT="$PROMPT_TEXT
 
 2 attempts failed. Do NOT repeat the same approach — try a DIFFERENT angle. Re-read the story's notes and question your prior assumption."
+    # Verify green but claim missing after last session → work is likely
+    # done, only the flag flip is owed. Say so — saves a full re-derivation.
+    if [ -f "$LOGS/green-unclaimed-$SID" ]; then
+      PROMPT_TEXT="$PROMPT_TEXT
+
+Verify is ALREADY GREEN after the previous session on $SID, but the story's
+\"passes\" flag was never set. The work is most likely complete and only the
+claim is missing. Confirm the acceptance criteria are genuinely met (run the
+story's own tests once), then set \"passes\": true in prd.json and commit.
+Do NOT rewrite or re-implement anything."
+    fi
 
     echo ""
     echo "=== iteration $i/$MAX_ITERS — story $SID attempt $((ATTEMPTS + 1)) ($MODEL, $(date +%H:%M:%S)) ==="
@@ -191,6 +214,15 @@ $(tail -30 "$LOGS/verify-last-$SID.log")
       --allowedTools "$ALLOWED_TOOLS" \
       --max-turns "$MAX_TURNS" \
       2>&1 | tee "$LOGS/iter-$i.log" || true
+
+    # Usage-limit death is not the story's fault: no attempt counted, no
+    # verify run (session may have died mid-edit). Sleep and retry the
+    # same story — burns an iteration slot, never a ladder rung.
+    if grep -qiE "hit your (session|usage) limit" "$LOGS/iter-$i.log"; then
+      echo "loop: usage limit hit — sleeping ${LIMIT_BACKOFF}s, attempt NOT counted"
+      sleep "$LIMIT_BACKOFF"
+      continue
+    fi
 
     # D2: gaming the exam kills the run.
     if [ "$(criteria_sum)" != "$FROZEN_SUM" ]; then
@@ -204,6 +236,7 @@ $(tail -30 "$LOGS/verify-last-$SID.log")
     fi
 
     # Machine truth — ALWAYS the driver-owned snapshot, never the project copy (D7).
+    rm -f "$LOGS/green-unclaimed-$SID"
     if "$VERIFY_SNAPSHOT" > "$LOGS/verify-$i.log" 2>&1; then
       echo "verify: PASS"
       FAILS=0
@@ -212,8 +245,11 @@ $(tail -30 "$LOGS/verify-last-$SID.log")
         prd_set '(.stories[] | select(.id == $id) | .status) = "done"' --arg id "$SID"
         echo "story $SID: DONE"
       else
-        # Verify green but story not claimed — count attempt, keep story todo.
+        # Verify green but story not claimed — count attempt, keep story
+        # todo, and flag it so the next prompt says "just flip the claim".
         prd_set '(.stories[] | select(.id == $id) | .attempts) += 1' --arg id "$SID"
+        touch "$LOGS/green-unclaimed-$SID"
+        echo "story $SID: verify green but unclaimed — next attempt told to confirm+flip"
       fi
     else
       FAILS=$((FAILS + 1))
@@ -233,6 +269,14 @@ $(tail -30 "$LOGS/verify-last-$SID.log")
       prd_set '(.stories[] | select(.id == $id) | .status) = "blocked"' --arg id "$SID"
       echo "story $SID: BLOCKED after $ATTEMPTS attempts — moving on"
     fi
+
+    # Baton durability: the driver's own prd.json mutations (attempts,
+    # status) and anything the agent wrote but forgot to commit
+    # (learnings, NOTES, QUESTIONS) must survive in git — commit .loop
+    # mechanically. Pathspec keeps stray agent-staged src files out;
+    # gitignore keeps runtime artifacts out.
+    git add .loop 2>/dev/null || true
+    git commit -qm "chore(loop): iter $i state — $SID" -- .loop 2>/dev/null || true
 
     if all_settled; then break; fi
   done
@@ -255,8 +299,35 @@ cmd_harvest() {
   [ -f "$TOOL_DIR/templates/HARVEST-PROMPT.md" ] || die "missing templates/HARVEST-PROMPT.md"
   cd "$PROJECT"
   mkdir -p "$PROJECT/.claude/skills-proposed"
+
+  # Failure-driven promotion (owner call 2026-07-05): the driver already
+  # knows which stories hurt — inject that evidence so the librarian
+  # mines postmortems first instead of hoping it digs them up.
+  local EVIDENCE=""
+  if [ -f "$PRD_JSON" ]; then
+    local HARD_STORIES
+    HARD_STORIES="$(jq -r '.stories[] | select(.attempts >= 2)
+      | "- \(.id) [\(.status)] attempts=\(.attempts): \(.notes | .[0:200])"' "$PRD_JSON")"
+    if [ -n "$HARD_STORIES" ]; then
+      EVIDENCE="
+
+## Driver evidence — stories that cost >=2 attempts (mine these FIRST)
+$HARD_STORIES"
+      local f
+      for f in "$LOGS"/verify-last-*.log; do
+        [ -f "$f" ] || continue
+        EVIDENCE="$EVIDENCE
+
+### $(basename "$f") — last failure tail
+\`\`\`
+$(tail -15 "$f")
+\`\`\`"
+      done
+    fi
+  fi
+
   echo "loop: librarian session — drafts land in .claude/skills-proposed/, nothing goes live"
-  claude -p "$(cat "$TOOL_DIR/templates/HARVEST-PROMPT.md")" \
+  claude -p "$(cat "$TOOL_DIR/templates/HARVEST-PROMPT.md")$EVIDENCE" \
     --model "$MODEL_EXEC" \
     --allowedTools "Read,Write,Glob,Grep" \
     --max-turns "$MAX_TURNS"
