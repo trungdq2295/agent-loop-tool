@@ -39,6 +39,8 @@ VERIFY="$LOOP_DIR/verify.sh"
 SUM_FILE="$LOOP_DIR/criteria.sum"
 LOGS="$LOOP_DIR/logs"
 REPORT="$LOOP_DIR/REPORT.md"
+QUESTIONS="$LOOP_DIR/QUESTIONS.md"
+QUESTIONS_ARCHIVE="$LOOP_DIR/QUESTIONS-archive.md"
 
 # Auto-shelve state (JetBrains-shelf style): the owner's uncommitted work is
 # saved to this dedicated ref — off the stash stack so it can't be popped by
@@ -63,6 +65,19 @@ command -v claude >/dev/null || die "claude CLI required"
 
 criteria_sum() { jq -S '[.stories[].acceptance]' "$PRD_JSON" | shasum -a 256 | cut -d' ' -f1; }
 verify_sum()   { shasum -a 256 "$VERIFY" | cut -d' ' -f1; }
+
+# Exact sentinel emitted by the template's unfilled Block 1. A frozen stub
+# fails every story forever with no in-run recovery — several guards grep
+# for this marker to refuse that state before it costs a run.
+VERIFY_STUB_MARK='Block 1 not filled in yet'
+
+# D7: freeze the exam script — snapshot outside the project + tripwire sum.
+freeze_verify() {
+  mkdir -p "$STATE_DIR"
+  cp "$VERIFY" "$VERIFY_SNAPSHOT"
+  chmod +x "$VERIFY_SNAPSHOT"
+  verify_sum > "$VERIFY_SUM_FILE"
+}
 
 # Edit prd.json safely (driver owns status/attempts — agent never touches them).
 prd_set() { # prd_set <jq-filter> [--arg k v ...]
@@ -96,6 +111,31 @@ cmd_init() {
   cp "$TOOL_DIR/templates/PROMPT.md" "$LOOP_DIR/PROMPT.md"
   cp "$TOOL_DIR/templates/verify.sh" "$LOOP_DIR/verify.sh"
   chmod +x "$LOOP_DIR/verify.sh"
+
+  # Auto-fill Block 1 from package.json scripts — the unfilled stub is the
+  # one mistake that dead-locks a whole run (frozen exam that always fails),
+  # so the common case must need zero hand-editing. Exotic projects keep the
+  # stub and get the EDIT warning below.
+  local FILLED=""
+  if [ -f "$PROJECT/package.json" ]; then
+    local s CMDS=""
+    for s in test typecheck lint; do
+      jq -e --arg s "$s" '.scripts[$s]' "$PROJECT/package.json" >/dev/null 2>&1 \
+        && CMDS="${CMDS}npm run $s\n"
+    done
+    if [ -n "$CMDS" ]; then
+      CMDS="${CMDS%\\n}"
+      awk -v cmds="$CMDS" '
+        /^# REPLACE these/ { print "# Auto-filled from package.json scripts (loop.sh init) — adjust if needed:"; next }
+        index($0, "Block 1 not filled in yet") { print cmds; next }
+        /^# npm test$/ || /^# npx tsc --noEmit$/ || /^# npm run lint$/ { next }
+        { print }
+      ' "$LOOP_DIR/verify.sh" > "$LOOP_DIR/verify.sh.tmp" \
+        && mv "$LOOP_DIR/verify.sh.tmp" "$LOOP_DIR/verify.sh"
+      chmod +x "$LOOP_DIR/verify.sh"
+      FILLED="$(printf '%b' "$CMDS" | tr '\n' ',' | sed 's/,/, /g')"
+    fi
+  fi
   # Runtime artifacts churn every run — keep them out of git entirely.
   # (prd.json / PRD.md / learnings stay tracked: they're the baton.)
   if ! grep -q '^\.loop/logs/' "$PROJECT/.gitignore" 2>/dev/null; then
@@ -103,7 +143,11 @@ cmd_init() {
     echo "loop: added runtime artifacts to .gitignore"
   fi
   echo "loop: scaffolded $LOOP_DIR"
-  echo "loop: EDIT $LOOP_DIR/verify.sh — fill Block 1 with this project's real checks"
+  if [ -n "$FILLED" ]; then
+    echo "loop: verify.sh Block 1 auto-filled from package.json: $FILLED — review it"
+  else
+    echo "loop: EDIT $LOOP_DIR/verify.sh — fill Block 1 with this project's real checks"
+  fi
   echo "loop: then run: loop.sh prd $PROJECT"
 }
 
@@ -113,6 +157,10 @@ cmd_prd() {
   cd "$PROJECT"
   [ -f "$TOOL_DIR/templates/PRD-PROMPT.md" ] || die "missing templates/PRD-PROMPT.md"
   [ -x "$VERIFY" ] || die "missing or non-executable $VERIFY — run 'loop.sh init' and fill Block 1 first"
+  # Refuse BEFORE the interactive session: freezing an unfilled exam would
+  # dead-lock every future run (always-red verify, no in-run recovery).
+  ! grep -qF "$VERIFY_STUB_MARK" "$VERIFY" \
+    || die "verify.sh Block 1 is still the template stub — fill it with this project's real checks first"
 
   echo "loop: starting interactive PRD session ($MODEL_PRD) — say 'approved' to finish"
   claude --model "$MODEL_PRD" "$(cat "$TOOL_DIR/templates/PRD-PROMPT.md")"
@@ -128,17 +176,61 @@ cmd_prd() {
   prd_set '.stories[] |= (.passes = false | .status = "todo" | .attempts = 0 | .notes //= "")'
 
   criteria_sum > "$SUM_FILE"
-
-  # D7: freeze the exam script — snapshot outside the project + tripwire sum.
-  mkdir -p "$STATE_DIR"
-  cp "$VERIFY" "$VERIFY_SNAPSHOT"
-  chmod +x "$VERIFY_SNAPSHOT"
-  verify_sum > "$VERIFY_SUM_FILE"
+  freeze_verify
 
   echo "loop: ready — $(jq '.stories | length' "$PRD_JSON") stories, criteria + verify frozen"
 }
 
 # ---------------------------------------------------------------- run ------
+# Answer-file protocol: blocked stories revive via QUESTIONS.md, no manual
+# prd.json surgery. Agent writes "## <id>: question" + "ANSWER: (pending)";
+# human fills the ANSWER line; next `loop.sh run` picks it up mechanically.
+
+# Print the filled answer for a story's section, nothing when unanswered.
+answer_for() { # answer_for <story-id>
+  awk -v sid="$1" '
+    /^## /              { insec = (index($0, "## " sid ":") == 1); inans = 0; next }
+    insec && /^ANSWER:/ { inans = 1; sub(/^ANSWER:[[:space:]]*/, "")
+                          if (length) buf = buf $0 " "; next }
+    insec && inans && length { buf = buf $0 " " }
+    END {
+      gsub(/[[:space:]]+$/, "", buf)
+      if (buf != "" && buf != "(pending)") print buf
+    }
+  ' "$QUESTIONS"
+}
+
+# Move a story's answered section out of QUESTIONS.md into the archive, so
+# the same answer is never applied twice and open questions stay visible.
+archive_question() { # archive_question <story-id>
+  awk -v sid="$1" -v arch="$QUESTIONS_ARCHIVE" '
+    /^## / { insec = (index($0, "## " sid ":") == 1) }
+    insec  { print >> arch; next }
+    { print }
+  ' "$QUESTIONS" > "$QUESTIONS.tmp" && mv "$QUESTIONS.tmp" "$QUESTIONS"
+  # nothing left but whitespace → drop the file (keeps REPORT.md clean)
+  grep -q '[^[:space:]]' "$QUESTIONS" 2>/dev/null || rm -f "$QUESTIONS"
+}
+
+# Blocked story + filled answer → back to todo with a FRESH attempt budget:
+# the old failures were missing-info failures; the answer changes the task
+# (and stale attempts would re-block after a single try). Answer lands in
+# the story's notes — the baton the next fresh session reads first.
+auto_unblock() {
+  [ -f "$QUESTIONS" ] || return 0
+  local sid ans
+  for sid in $(jq -r '.stories[] | select(.status == "blocked") | .id' "$PRD_JSON"); do
+    ans="$(answer_for "$sid")"
+    [ -n "$ans" ] || continue
+    prd_set '(.stories[] | select(.id == $id))
+             |= (.status = "todo" | .attempts = 0
+                 | .notes = ((.notes // "") + " | HUMAN ANSWER: " + $ans))' \
+      --arg id "$sid" --arg ans "$ans"
+    archive_question "$sid"
+    echo "loop: $sid unblocked — human answer found, attempts reset"
+  done
+}
+
 next_story() { jq -r '[.stories[] | select(.status == "todo")][0].id // empty' "$PRD_JSON"; }
 story_field() { jq -r --arg id "$1" ".stories[] | select(.id == \$id) | .$2" "$PRD_JSON"; }
 all_settled() { jq -e '[.stories[].status] | all(. == "done" or . == "blocked")' "$PRD_JSON" >/dev/null; }
@@ -174,7 +266,23 @@ cmd_run() {
   [ -f "$SUM_FILE" ]  || die "criteria not frozen — run 'loop.sh prd' first (prd-step exit gate)"
   [ "$(criteria_sum)" = "$(cat "$SUM_FILE")" ] || die "criteria changed since freeze — re-run prd phase"
   [ -x "$VERIFY_SNAPSHOT" ] || die "verify not frozen — run 'loop.sh prd' first (D7)"
-  [ "$(verify_sum)" = "$(cat "$VERIFY_SUM_FILE")" ] || die "verify.sh changed since freeze — re-approve + re-run prd phase"
+  # An unfilled exam fails every story forever — refuse before spawning anything.
+  ! grep -qF "$VERIFY_STUB_MARK" "$VERIFY" \
+    || die "verify.sh Block 1 is still the template stub — fill it with real checks, then re-run (you'll be offered a re-freeze)"
+  # Between-runs improvement path (D7 gated channel): verify.sh changed while
+  # no run was live → show the diff, one keystroke re-freezes. The mid-run
+  # tamper kill further down is untouched — this runs before any agent spawns.
+  if [ "$(verify_sum)" != "$(cat "$VERIFY_SUM_FILE")" ]; then
+    echo "loop: verify.sh differs from the frozen snapshot:"
+    diff -u "$VERIFY_SNAPSHOT" "$VERIFY" || true
+    [ -t 0 ] || die "verify.sh changed since freeze — approve the re-freeze from a terminal (or restore the file)"
+    printf "loop: re-freeze this verify.sh as the new exam? [y/N] "
+    read -r REPLY
+    case "$REPLY" in
+      y|Y|yes|YES) freeze_verify; echo "loop: verify.sh re-frozen" ;;
+      *) die "declined — restore verify.sh (or approve the re-freeze) to run" ;;
+    esac
+  fi
 
   mkdir -p "$LOGS"
   cd "$PROJECT"
@@ -206,6 +314,13 @@ cmd_run() {
       echo "loop: on branch $BRANCH"
       ;;
   esac
+
+  # Answer-file protocol: answered questions revive blocked stories, so
+  # resuming after a blocked exit is always just: fill ANSWER → loop.sh run.
+  # AFTER the branch checkout — QUESTIONS.md and prd.json live on the
+  # feature branch; touching them earlier would edit the wrong tree and
+  # could make the checkout itself conflict.
+  auto_unblock
 
   local FROZEN_SUM; FROZEN_SUM="$(cat "$SUM_FILE")"
   local FAILS=0
@@ -328,6 +443,9 @@ Do NOT rewrite or re-implement anything."
     exit 0
   elif all_settled; then
     write_report "$i" "PARTIAL — blocked stories need you"
+    if [ -f "$QUESTIONS" ]; then
+      echo "loop: to resume — fill the ANSWER lines in .loop/QUESTIONS.md (branch $BRANCH), then re-run: loop.sh run $PROJECT"
+    fi
     exit 2
   else
     write_report "$i" "CAPPED — max iterations reached"
