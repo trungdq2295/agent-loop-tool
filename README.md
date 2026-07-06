@@ -32,9 +32,11 @@ Creates `PROJECT/.loop/` from templates (`PROMPT.md`, `verify.sh`) and adds
 the loop's runtime artifacts to the project's `.gitignore`. Refuses if
 `.loop/` already exists — remove a stale one first.
 
-**Then edit `PROJECT/.loop/verify.sh`** — fill Block 1 with this project's
-real health checks (e.g. `npm test`, `npm run typecheck`, `npm run lint`).
-This is the exam the agent can't touch.
+`verify.sh` Block 1 — the exam the agent can't touch — is **auto-filled**
+from `package.json` scripts when `test` / `typecheck` / `lint` exist.
+Review it. No `package.json` (or no matching scripts)? Fill Block 1 by
+hand — `prd` refuses to freeze an unfilled stub, so this can't be
+silently skipped.
 
 ### 2. `prd` — plan the work (interactive)
 
@@ -47,6 +49,10 @@ agent drafts stories + acceptance criteria, reads them back, and you say
 **"approved"** when they're right. On approval the criteria and `verify.sh`
 are checksum-frozen. This phase needs you at the keyboard.
 
+Refuses to start while `verify.sh` Block 1 is still the template stub — a
+frozen always-red exam would fail every story forever with no in-run
+recovery.
+
 ### 3. `run` — the unattended loop
 
 ```bash
@@ -58,6 +64,21 @@ One fresh session per iteration, one story at a time, verify after each,
 until every story is done or a cap/breaker stops it. Refuses a dirty tree
 (`.loop/` is exempt) and refuses to run on `main`/`master` — it checks out
 the branch named in the PRD. Writes `.loop/REPORT.md` on every exit.
+
+**`run` is the only command you ever re-type.** It self-heals on start:
+
+- *Blocked stories with answered questions revive automatically.* When the
+  agent gets stuck it writes a question to `.loop/QUESTIONS.md` with an
+  `ANSWER: (pending)` line. Fill that line, re-run `loop.sh run` — the
+  story flips back to todo with a fresh attempt budget and your answer in
+  its notes. Answered questions move to `.loop/QUESTIONS-archive.md`.
+- *`verify.sh` improved between runs?* `run` shows the diff against the
+  frozen snapshot and asks one y/N to re-freeze — no PRD re-run needed.
+  (Mid-run edits still kill the run; only the pre-start window is gated
+  by you.)
+- *`prd`'s freeze interrupted?* (crash, permission denial mid-write) —
+  `run` detects the half-frozen state, shows Block 1, and offers the
+  same y/N to finish the freeze. The approved PRD is never redone.
 
 ### 4. `harvest` — capture lessons (optional)
 

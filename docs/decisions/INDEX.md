@@ -10,3 +10,4 @@ questioning that choice — never load all pages by default.
 - [D5](D5-resume-baton.md) — mid-story continuity via git + notes baton; read before touching resume/commit rules
 - [D6](D6-skills-harvest.md) — skills: harvest phase, staged approval, project-only, high bar; read before touching learning pipeline
 - [D7](D7-verify-protection.md) — verify.sh snapshot + checksum tripwire, gated self-improvement; read before touching verify machinery
+- [D8](D8-team-adoption.md) — team adoption = design constraint; never hard-assume tracked .loop/; read before adding git assumptions (git-mode knob itself: BACKLOG, not built)

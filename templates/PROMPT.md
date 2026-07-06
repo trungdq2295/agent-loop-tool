@@ -66,9 +66,20 @@ Protocol, in order:
 
 ## When stuck or off-script
 
-- Missing info / contradictory criteria → write the problem to
-  `.loop/QUESTIONS.md`, leave the story unfinished, end your session.
-  Do not guess.
+- Missing info / contradictory criteria → APPEND to `.loop/QUESTIONS.md`
+  in EXACTLY this format (the driver parses it — a human fills the
+  ANSWER line and the driver automatically revives your story with the
+  answer in its notes):
+
+  ```markdown
+  ## <story-id>: <one-line question>
+  <context the human needs to answer — 2-3 lines max>
+  ANSWER: (pending)
+  ```
+
+  One section per question, heading MUST start with the story id, the
+  literal line `ANSWER: (pending)` MUST close the section. Then leave
+  the story unfinished and end your session. Do not guess.
 - Discover a bug RELATED to your story → same: QUESTIONS.md, stop.
 - Discover something UNRELATED → one line in `.loop/NOTES.md`, then
   back to your story. Never fix drive-by.
