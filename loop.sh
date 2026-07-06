@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# loop.sh — loop-tool driver v2. Built from docs/driver.md (settled 2026-07-04).
+# loop.sh — loop-tool driver v3. Built from docs/driver.md (settled 2026-07-04).
 # Dumb bash by design: spawns, checks, counts, decides mechanically.
 # Rationale for every knob: docs/decisions/ — read before changing values.
 #
 # Usage:
-#   loop.sh init <project-dir>             scaffold .loop/ from templates
-#   loop.sh prd <project-dir>              Phase 0: interactive PRD session
-#   loop.sh run <project-dir> [max-iters]  Phase 1: unattended loop
-#   loop.sh harvest <project-dir>          Phase 3: librarian session
+#   loop.sh init <project-dir>                        scaffold .loop/ from templates (once per project)
+#   loop.sh prd <project-dir>                         Phase 0: interactive PRD → new feature folder
+#   loop.sh run <project-dir> [feature] [max-iters]   Phase 1: unattended loop (feature optional when only one is open)
+#   loop.sh harvest <project-dir>                     Phase 3: librarian session (mines all features)
 #
 # Env overrides:
 #   LOOP_TOOLS           run-mode allowed tools (default: Edit,Write,Read,Bash,Glob,Grep,Skill)
@@ -16,6 +16,8 @@
 #   LOOP_MODEL_ESCALATE  attempt-3 model        (default: opus)
 #   LOOP_MODEL_PRD       phase-0 model          (default: opus)
 #   LOOP_LIMIT_BACKOFF   sleep after usage-limit death, seconds (default: 1200)
+#   LOOP_GIT_MODE        init only — 'ignored' (default, .loop/ gitignored, D10)
+#                        or 'tracked' (baton committed per iteration, v2 behavior)
 set -euo pipefail
 
 TOOL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,24 +25,33 @@ TOOL_DIR="$(cd "$(dirname "$0")" && pwd)"
 die() { echo "loop: $*" >&2; exit 1; }
 
 CMD="${1:-}"
-[ -n "$CMD" ] || die "usage: loop.sh <init|prd|run|harvest> <project-dir> [max-iters]"
+[ -n "$CMD" ] || die "usage: loop.sh <init|prd|run|harvest> <project-dir> [feature] [max-iters]"
 PROJECT="$(cd "${2:?usage: loop.sh $CMD <project-dir>}" && pwd)"
 
 # Driver-owned state, OUTSIDE the project — agent sessions are confined
 # to the project dir, so nothing here is reachable by them (D7).
 STATE_DIR="$TOOL_DIR/state/$(basename "$PROJECT")-$(echo "$PROJECT" | shasum -a 256 | cut -c1-8)"
-VERIFY_SNAPSHOT="$STATE_DIR/verify.sh"
-VERIFY_SUM_FILE="$STATE_DIR/verify.sum"
 
+# Shared, feature-agnostic project state (D9).
 LOOP_DIR="$PROJECT/.loop"
-PRD_JSON="$LOOP_DIR/prd.json"
+FEATURES_DIR="$LOOP_DIR/features"
 PROMPT_MD="$LOOP_DIR/PROMPT.md"
 VERIFY="$LOOP_DIR/verify.sh"
-SUM_FILE="$LOOP_DIR/criteria.sum"
-LOGS="$LOOP_DIR/logs"
-REPORT="$LOOP_DIR/REPORT.md"
-QUESTIONS="$LOOP_DIR/QUESTIONS.md"
-QUESTIONS_ARCHIVE="$LOOP_DIR/QUESTIONS-archive.md"
+MODE_FILE="$LOOP_DIR/mode"
+
+# Per-feature state — set by select_feature(); empty until then so a path
+# bug fails loudly instead of touching the wrong feature.
+SLUG=""
+FEAT_DIR=""
+PRD_JSON=""
+SUM_FILE=""
+LOGS=""
+REPORT=""
+QUESTIONS=""
+QUESTIONS_ARCHIVE=""
+STATE_FEAT=""
+VERIFY_SNAPSHOT=""
+VERIFY_SUM_FILE=""
 
 # Auto-shelve state (JetBrains-shelf style): the owner's uncommitted work is
 # saved to this dedicated ref — off the stash stack so it can't be popped by
@@ -48,6 +59,7 @@ QUESTIONS_ARCHIVE="$LOOP_DIR/QUESTIONS-archive.md"
 SHELF_REF="refs/loop-tool/shelf"
 SHELF_SHA=""       # populated only when something was shelved
 ORIG_BRANCH=""     # branch to return the owner to
+LOCK_FILE=""       # pid lockfile — one run per working tree (D9)
 
 # Skill included so harvest-promoted skills (.claude/skills/) can fire
 # in future loop sessions — push-based recall (harvest-step.md).
@@ -66,14 +78,95 @@ command -v claude >/dev/null || die "claude CLI required"
 criteria_sum() { jq -S '[.stories[].acceptance]' "$PRD_JSON" | shasum -a 256 | cut -d' ' -f1; }
 verify_sum()   { shasum -a 256 "$VERIFY" | cut -d' ' -f1; }
 
+# D10 git mode, recorded at init in an explicit marker — NEVER inferred from
+# .gitignore at runtime: the owner's uncommitted .gitignore can get shelved
+# away mid-run, silently flipping the inference and letting the sweep-commit
+# track a dir that was meant to be invisible. Missing marker = tracked
+# (v2 projects predate the marker and tracked their baton).
+git_mode() { cat "$MODE_FILE" 2>/dev/null || echo tracked; }
+
 # Exact sentinel emitted by the template's unfilled Block 1. A frozen stub
 # fails every story forever with no in-run recovery — several guards grep
 # for this marker to refuse that state before it costs a run.
 VERIFY_STUB_MARK='Block 1 not filled in yet'
 
+# ------------------------------------------------------ feature plumbing ---
+# D9: one folder per feature. Everything after select_feature() operates on
+# that feature only; the agent is told the exact dir and reads nothing else.
+
+slug_from_branch() { # "loop/copy-paste" → "copy-paste"
+  basename "$1" | tr -c 'a-zA-Z0-9._-' '-' | sed 's/^-*//; s/-*$//'
+}
+
+select_feature() { # select_feature <slug>
+  SLUG="$1"
+  FEAT_DIR="$FEATURES_DIR/$SLUG"
+  PRD_JSON="$FEAT_DIR/prd.json"
+  SUM_FILE="$FEAT_DIR/criteria.sum"
+  LOGS="$FEAT_DIR/logs"
+  REPORT="$FEAT_DIR/REPORT.md"
+  QUESTIONS="$FEAT_DIR/QUESTIONS.md"
+  QUESTIONS_ARCHIVE="$FEAT_DIR/QUESTIONS-archive.md"
+  STATE_FEAT="$STATE_DIR/$SLUG"
+  VERIFY_SNAPSHOT="$STATE_FEAT/verify.sh"
+  VERIFY_SUM_FILE="$STATE_FEAT/verify.sum"
+}
+
+# Open = not all stories done. Blocked counts as open — an answered
+# question must be able to revive it via plain `loop.sh run`.
+open_features() {
+  local d
+  for d in "$FEATURES_DIR"/*/; do
+    [ -f "$d/prd.json" ] || continue
+    jq -e '[.stories[].status] | all(. == "done")' "$d/prd.json" >/dev/null \
+      || basename "$d"
+  done
+}
+
+resolve_feature() { # resolve_feature [requested-slug]
+  local req="${1:-}"
+  if [ -n "$req" ]; then
+    [ -f "$FEATURES_DIR/$req/prd.json" ] \
+      || die "no feature '$req' — have: $(ls "$FEATURES_DIR" 2>/dev/null | tr '\n' ' ')"
+    select_feature "$req"
+    return
+  fi
+  local OPEN N
+  OPEN="$(open_features)"
+  N="$(printf '%s' "$OPEN" | grep -c . || true)"
+  [ "$N" -ge 1 ] || die "no open feature — plan one: loop.sh prd $PROJECT"
+  [ "$N" -eq 1 ] || die "multiple open features — pick one: loop.sh run $PROJECT <feature>
+$(echo "$OPEN" | sed 's/^/  - /')"
+  select_feature "$OPEN"
+}
+
+# v2 → v3 upgrade: flat .loop/prd.json moves into features/<slug>/ with all
+# its satellites; tool-side snapshot follows. Mid-flight features survive.
+migrate_legacy() {
+  [ -f "$LOOP_DIR/prd.json" ] || return 0
+  local slug f
+  slug="$(slug_from_branch "$(jq -r '.branch // "legacy"' "$LOOP_DIR/prd.json")")"
+  [ -n "$slug" ] || slug="legacy"
+  select_feature "$slug"
+  [ -d "$FEAT_DIR" ] && die "legacy .loop/prd.json found but features/$slug already exists — resolve by hand"
+  mkdir -p "$FEAT_DIR"
+  for f in prd.json PRD.md criteria.sum QUESTIONS.md QUESTIONS-archive.md NOTES.md REPORT.md; do
+    [ -f "$LOOP_DIR/$f" ] && mv "$LOOP_DIR/$f" "$FEAT_DIR/$f"
+  done
+  [ -d "$LOOP_DIR/logs" ] && mv "$LOOP_DIR/logs" "$LOGS"
+  if [ -f "$STATE_DIR/verify.sh" ]; then
+    mkdir -p "$STATE_FEAT"
+    mv "$STATE_DIR/verify.sh" "$VERIFY_SNAPSHOT"
+    [ -f "$STATE_DIR/verify.sum" ] && mv "$STATE_DIR/verify.sum" "$VERIFY_SUM_FILE"
+  fi
+  # v2 projects tracked their baton — record that so shelve/sweep behave.
+  [ -f "$MODE_FILE" ] || echo tracked > "$MODE_FILE"
+  echo "loop: migrated legacy flat .loop layout → .loop/features/$slug/"
+}
+
 # D7: freeze the exam script — snapshot outside the project + tripwire sum.
 freeze_verify() {
-  mkdir -p "$STATE_DIR"
+  mkdir -p "$STATE_FEAT"
   cp "$VERIFY" "$VERIFY_SNAPSHOT"
   chmod +x "$VERIFY_SNAPSHOT"
   verify_sum > "$VERIFY_SUM_FILE"
@@ -94,9 +187,13 @@ prd_set() { # prd_set <jq-filter> [--arg k v ...]
 unshelf() {
   [ -n "$SHELF_SHA" ] || return 0
   git checkout -q "$ORIG_BRANCH" 2>/dev/null || true
+  # Report the branch we are ACTUALLY on — if the checkout was blocked the
+  # shelf must not be claimed restored somewhere it isn't.
+  local CUR; CUR="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
   if git stash apply -q "$SHELF_SHA" 2>/dev/null; then
     git update-ref -d "$SHELF_REF" 2>/dev/null || true
-    echo "loop: restored your shelved work on $ORIG_BRANCH"
+    echo "loop: restored your shelved work on $CUR"
+    [ "$CUR" = "$ORIG_BRANCH" ] || echo "loop: WARN could not return to $ORIG_BRANCH — you are on $CUR" >&2
   else
     echo "loop: WARN could not cleanly restore shelved work — it is SAFE at $SHELF_REF." >&2
     echo "loop:   recover with: git stash apply $SHELF_REF" >&2
@@ -104,10 +201,31 @@ unshelf() {
   SHELF_SHA=""
 }
 
+# One run per working tree (D9): parallel runs in one tree fight over git
+# checkout/shelve/files. True parallel = worktrees (docs/BACKLOG.md).
+acquire_lock() {
+  LOCK_FILE="$STATE_DIR/run.lock"
+  mkdir -p "$STATE_DIR"
+  if [ -f "$LOCK_FILE" ]; then
+    local pid; pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      die "another run is active on this project (pid $pid) — one run per working tree.
+     Parallel features need worktrees: see docs/BACKLOG.md"
+    fi
+    echo "loop: removing stale lock (pid ${pid:-?} gone)"
+  fi
+  echo $$ > "$LOCK_FILE"
+}
+
+cleanup() {
+  unshelf
+  [ -z "$LOCK_FILE" ] || rm -f "$LOCK_FILE"
+}
+
 # --------------------------------------------------------------- init ------
 cmd_init() {
   [ -d "$LOOP_DIR" ] && die ".loop/ already exists — refusing to overwrite"
-  mkdir -p "$LOOP_DIR/learnings"
+  mkdir -p "$LOOP_DIR/learnings" "$FEATURES_DIR"
   cp "$TOOL_DIR/templates/PROMPT.md" "$LOOP_DIR/PROMPT.md"
   cp "$TOOL_DIR/templates/verify.sh" "$LOOP_DIR/verify.sh"
   chmod +x "$LOOP_DIR/verify.sh"
@@ -136,12 +254,22 @@ cmd_init() {
       FILLED="$(printf '%b' "$CMDS" | tr '\n' ',' | sed 's/,/, /g')"
     fi
   fi
-  # Runtime artifacts churn every run — keep them out of git entirely.
-  # (prd.json / PRD.md / learnings stay tracked: they're the baton.)
-  if ! grep -q '^\.loop/logs/' "$PROJECT/.gitignore" 2>/dev/null; then
-    printf '\n# loop-tool runtime artifacts\n.loop/logs/\n.loop/REPORT.md\n.loop/BLOCKED.md\n.loop/test-count\n' >> "$PROJECT/.gitignore"
-    echo "loop: added runtime artifacts to .gitignore"
+
+  # D10: invisible to git by default — one ignore line, zero repo noise.
+  # LOOP_GIT_MODE=tracked keeps the v2 baton-in-git behavior.
+  echo "${LOOP_GIT_MODE:-ignored}" > "$MODE_FILE"
+  if [ "${LOOP_GIT_MODE:-ignored}" = "tracked" ]; then
+    if ! grep -q '^\.loop/logs/' "$PROJECT/.gitignore" 2>/dev/null; then
+      printf '\n# loop-tool runtime artifacts (LOOP_GIT_MODE=tracked)\n.loop/features/*/logs/\n.loop/features/*/REPORT.md\n.loop/test-count\n' >> "$PROJECT/.gitignore"
+      echo "loop: tracked mode — runtime artifacts added to .gitignore"
+    fi
+  else
+    if ! grep -q '^\.loop/$' "$PROJECT/.gitignore" 2>/dev/null; then
+      printf '\n# loop-tool state (untracked by default, D10 — LOOP_GIT_MODE=tracked to keep in git)\n.loop/\n' >> "$PROJECT/.gitignore"
+      echo "loop: .loop/ added to .gitignore — the loop leaves no trace in your repo"
+    fi
   fi
+
   echo "loop: scaffolded $LOOP_DIR"
   if [ -n "$FILLED" ]; then
     echo "loop: verify.sh Block 1 auto-filled from package.json: $FILLED — review it"
@@ -153,7 +281,7 @@ cmd_init() {
 
 # ---------------------------------------------------------------- prd ------
 cmd_prd() {
-  mkdir -p "$LOOP_DIR"
+  mkdir -p "$FEATURES_DIR"
   cd "$PROJECT"
   [ -f "$TOOL_DIR/templates/PRD-PROMPT.md" ] || die "missing templates/PRD-PROMPT.md"
   [ -x "$VERIFY" ] || die "missing or non-executable $VERIFY — run 'loop.sh init' and fill Block 1 first"
@@ -165,12 +293,23 @@ cmd_prd() {
   echo "loop: starting interactive PRD session ($MODEL_PRD) — say 'approved' to finish"
   claude --model "$MODEL_PRD" "$(cat "$TOOL_DIR/templates/PRD-PROMPT.md")"
 
-  # Phase 0 exit gate (prd-step.md): validate, then freeze.
-  [ -f "$PRD_JSON" ] || die "PRD session ended without $PRD_JSON"
-  jq -e '.feature and .branch and (.stories | length > 0)' "$PRD_JSON" >/dev/null \
+  # Phase 0 exit gate (prd-step.md): validate, then relocate + freeze.
+  # The PRD agent writes flat .loop/prd.json + .loop/PRD.md; the driver owns
+  # the features/ layout, so it derives the slug and moves them into place.
+  local FLAT="$LOOP_DIR/prd.json"
+  [ -f "$FLAT" ] || die "PRD session ended without $FLAT"
+  jq -e '.feature and .branch and (.stories | length > 0)' "$FLAT" >/dev/null \
     || die "prd.json invalid: need feature, branch, stories[]"
   jq -e '[.stories[] | select((.id and .story and (.acceptance|length>0)) | not)] | length == 0' \
-    "$PRD_JSON" >/dev/null || die "prd.json invalid: every story needs id, story, acceptance[]"
+    "$FLAT" >/dev/null || die "prd.json invalid: every story needs id, story, acceptance[]"
+
+  local slug; slug="$(slug_from_branch "$(jq -r '.branch' "$FLAT")")"
+  [ -n "$slug" ] || die "could not derive a feature slug from branch '$(jq -r '.branch' "$FLAT")'"
+  select_feature "$slug"
+  [ -d "$FEAT_DIR" ] && die "feature '$slug' already exists (features/$slug) — pick a different branch name in the PRD"
+  mkdir -p "$FEAT_DIR"
+  mv "$FLAT" "$PRD_JSON"
+  [ -f "$LOOP_DIR/PRD.md" ] && mv "$LOOP_DIR/PRD.md" "$FEAT_DIR/PRD.md"
 
   # Normalize driver-owned fields regardless of what the agent wrote.
   prd_set '.stories[] |= (.passes = false | .status = "todo" | .attempts = 0 | .notes //= "")'
@@ -178,7 +317,8 @@ cmd_prd() {
   criteria_sum > "$SUM_FILE"
   freeze_verify
 
-  echo "loop: ready — $(jq '.stories | length' "$PRD_JSON") stories, criteria + verify frozen"
+  echo "loop: ready — feature '$slug', $(jq '.stories | length' "$PRD_JSON") stories, criteria + verify frozen"
+  echo "loop: next: loop.sh run $PROJECT"
 }
 
 # ---------------------------------------------------------------- run ------
@@ -238,7 +378,7 @@ all_done()    { jq -e '[.stories[].status] | all(. == "done")' "$PRD_JSON" >/dev
 
 write_report() { # write_report <iterations-used> <outcome>
   {
-    echo "# Morning report — $(date)"
+    echo "# Morning report — feature '$SLUG' — $(date)"
     echo
     echo "Outcome: **$2** after $1 iteration(s), branch \`$BRANCH\`"
     echo
@@ -246,20 +386,31 @@ write_report() { # write_report <iterations-used> <outcome>
     echo "|---|---|---|---|"
     jq -r '.stories[] | "| \(.id) | \(.status) | \(.attempts) | \(.notes | gsub("\\|"; "/") | .[0:120]) |"' "$PRD_JSON"
     echo
-    if [ -f "$LOOP_DIR/NOTES.md" ]; then
+    if [ -f "$FEAT_DIR/NOTES.md" ]; then
       echo "## Out-of-scope notes (triage me)"
-      cat "$LOOP_DIR/NOTES.md"
+      cat "$FEAT_DIR/NOTES.md"
     fi
-    if [ -f "$LOOP_DIR/QUESTIONS.md" ]; then
+    if [ -f "$QUESTIONS" ]; then
       echo "## Open questions (blocked on you)"
-      cat "$LOOP_DIR/QUESTIONS.md"
+      echo "Fill the ANSWER lines in \`.loop/features/$SLUG/QUESTIONS.md\`, then re-run \`loop.sh run\`."
+      echo
+      cat "$QUESTIONS"
     fi
   } > "$REPORT"
   echo "loop: report written — $REPORT"
 }
 
 cmd_run() {
-  local MAX_ITERS="${3:-25}"   # D1
+  # arg 3 = feature slug or max-iters (numeric); arg 4 = max-iters after a slug
+  local FEAT_ARG="" MAX_ITERS=25   # D1
+  case "${3:-}" in
+    '')          ;;
+    *[!0-9]*)    FEAT_ARG="$3"; MAX_ITERS="${4:-25}" ;;
+    *)           MAX_ITERS="$3" ;;
+  esac
+  resolve_feature "$FEAT_ARG"
+  echo "loop: feature '$SLUG'"
+
   [ -f "$PRD_JSON" ]  || die "missing $PRD_JSON — run 'loop.sh prd' first"
   [ -f "$PROMPT_MD" ] || die "missing $PROMPT_MD"
   [ -x "$VERIFY" ]    || die "missing or non-executable $VERIFY"
@@ -301,6 +452,9 @@ cmd_run() {
   mkdir -p "$LOGS"
   cd "$PROJECT"
 
+  acquire_lock
+  trap cleanup EXIT
+
   # Ring 2 (harness §1): isolation. Instead of refusing a dirty tree, we
   # auto-shelve the owner's uncommitted work (JetBrains "shelve" style) so a
   # run is never blocked — and restore it on exit. .loop/ is EXCLUDED from the
@@ -311,12 +465,17 @@ cmd_run() {
     die "a previous shelf exists at $SHELF_REF (a prior run likely crashed mid-restore).
      Recover it first:  git stash apply $SHELF_REF  &&  git update-ref -d $SHELF_REF"
   fi
-  if [ -n "$(git status --porcelain -- . ':(exclude).loop')" ]; then
-    git stash push --include-untracked -q -m "loop-tool auto-shelf" -- . ':(exclude).loop'
+  # In ignored mode (D10 default) git never sees .loop, and naming an
+  # ignored path in a stash pathspec makes git error out — exclude it
+  # only in tracked mode. Decided by the init-time marker, not by live
+  # gitignore state (see git_mode).
+  local SHELF_SPEC=(-- .)
+  [ "$(git_mode)" = "tracked" ] && SHELF_SPEC=(-- . ':(exclude).loop')
+  if [ -n "$(git status --porcelain "${SHELF_SPEC[@]}")" ]; then
+    git stash push --include-untracked -q -m "loop-tool auto-shelf" "${SHELF_SPEC[@]}"
     git update-ref "$SHELF_REF" "$(git rev-parse stash@{0})"  # keep alive off-stack
     SHELF_SHA="$(git rev-parse "$SHELF_REF")"
     git stash drop -q                                         # clear the stash stack
-    trap unshelf EXIT
     echo "loop: shelved your uncommitted work → $SHELF_REF (restored on exit)"
   fi
 
@@ -331,9 +490,9 @@ cmd_run() {
 
   # Answer-file protocol: answered questions revive blocked stories, so
   # resuming after a blocked exit is always just: fill ANSWER → loop.sh run.
-  # AFTER the branch checkout — QUESTIONS.md and prd.json live on the
-  # feature branch; touching them earlier would edit the wrong tree and
-  # could make the checkout itself conflict.
+  # AFTER the branch checkout — in tracked mode (D10) QUESTIONS.md and
+  # prd.json live on the feature branch; touching them earlier would edit
+  # the wrong tree and could make the checkout itself conflict.
   auto_unblock
 
   local FROZEN_SUM; FROZEN_SUM="$(cat "$SUM_FILE")"
@@ -352,6 +511,9 @@ cmd_run() {
     local PROMPT_TEXT; PROMPT_TEXT="$(cat "$PROMPT_MD")
 
 ## Driver directive — iteration $i
+Your feature directory is \`.loop/features/$SLUG/\` — its prd.json,
+QUESTIONS.md and NOTES.md are YOURS; do not read other feature folders.
+Shared learnings stay in \`.loop/learnings/\`.
 Work ONLY story $SID. One story per iteration, nothing else."
     if [ "$ATTEMPTS" -ge 1 ] && [ -f "$LOGS/verify-last-$SID.log" ]; then
       PROMPT_TEXT="$PROMPT_TEXT
@@ -372,12 +534,12 @@ $(tail -30 "$LOGS/verify-last-$SID.log")
 Verify is ALREADY GREEN after the previous session on $SID, but the story's
 \"passes\" flag was never set. The work is most likely complete and only the
 claim is missing. Confirm the acceptance criteria are genuinely met (run the
-story's own tests once), then set \"passes\": true in prd.json and commit.
-Do NOT rewrite or re-implement anything."
+story's own tests once), then set \"passes\": true in your feature's prd.json
+and commit. Do NOT rewrite or re-implement anything."
     fi
 
     echo ""
-    echo "=== iteration $i/$MAX_ITERS — story $SID attempt $((ATTEMPTS + 1)) ($MODEL, $(date +%H:%M:%S)) ==="
+    echo "=== iteration $i/$MAX_ITERS — feature $SLUG story $SID attempt $((ATTEMPTS + 1)) ($MODEL, $(date +%H:%M:%S)) ==="
 
     claude -p "$PROMPT_TEXT" \
       --model "$MODEL" \
@@ -440,25 +602,26 @@ Do NOT rewrite or re-implement anything."
       echo "story $SID: BLOCKED after $ATTEMPTS attempts — moving on"
     fi
 
-    # Baton durability: the driver's own prd.json mutations (attempts,
-    # status) and anything the agent wrote but forgot to commit
-    # (learnings, NOTES, QUESTIONS) must survive in git — commit .loop
-    # mechanically. Pathspec keeps stray agent-staged src files out;
-    # gitignore keeps runtime artifacts out.
-    git add .loop 2>/dev/null || true
-    git commit -qm "chore(loop): iter $i state — $SID" -- .loop 2>/dev/null || true
+    # Baton durability (tracked mode only, D10): the driver's own prd.json
+    # mutations and anything the agent forgot to commit must survive in git.
+    # In ignored mode disk is the baton and git must never see .loop —
+    # gated on the marker, NOT on gitignore state, which can be shelved away.
+    if [ "$(git_mode)" = "tracked" ]; then
+      git add .loop 2>/dev/null || true
+      git commit -qm "chore(loop): $SLUG iter $i state — $SID" -- .loop 2>/dev/null || true
+    fi
 
     if all_settled; then break; fi
   done
 
   if all_done; then
     write_report "$i" "COMPLETE"
-    echo "loop: COMPLETE — all stories done, verify green"
+    echo "loop: COMPLETE — feature '$SLUG' done, verify green"
     exit 0
   elif all_settled; then
     write_report "$i" "PARTIAL — blocked stories need you"
     if [ -f "$QUESTIONS" ]; then
-      echo "loop: to resume — fill the ANSWER lines in .loop/QUESTIONS.md (branch $BRANCH), then re-run: loop.sh run $PROJECT"
+      echo "loop: to resume — fill the ANSWER lines in .loop/features/$SLUG/QUESTIONS.md, then re-run: loop.sh run $PROJECT"
     fi
     exit 2
   else
@@ -476,28 +639,29 @@ cmd_harvest() {
   # Failure-driven promotion (owner call 2026-07-05): the driver already
   # knows which stories hurt — inject that evidence so the librarian
   # mines postmortems first instead of hoping it digs them up.
-  local EVIDENCE=""
-  if [ -f "$PRD_JSON" ]; then
-    local HARD_STORIES
+  # v3: evidence spans ALL features — cross-feature recurrence is exactly
+  # what makes a lesson skill-worthy (harvest-step.md bar #1).
+  local EVIDENCE="" pj slug HARD_STORIES f
+  for pj in "$FEATURES_DIR"/*/prd.json; do
+    [ -f "$pj" ] || continue
+    slug="$(basename "$(dirname "$pj")")"
     HARD_STORIES="$(jq -r '.stories[] | select(.attempts >= 2)
-      | "- \(.id) [\(.status)] attempts=\(.attempts): \(.notes | .[0:200])"' "$PRD_JSON")"
-    if [ -n "$HARD_STORIES" ]; then
-      EVIDENCE="
+      | "- \(.id) [\(.status)] attempts=\(.attempts): \(.notes | .[0:200])"' "$pj")"
+    [ -n "$HARD_STORIES" ] || continue
+    EVIDENCE="$EVIDENCE
 
-## Driver evidence — stories that cost >=2 attempts (mine these FIRST)
+## Driver evidence — feature '$slug', stories that cost >=2 attempts (mine these FIRST)
 $HARD_STORIES"
-      local f
-      for f in "$LOGS"/verify-last-*.log; do
-        [ -f "$f" ] || continue
-        EVIDENCE="$EVIDENCE
+    for f in "$(dirname "$pj")/logs"/verify-last-*.log; do
+      [ -f "$f" ] || continue
+      EVIDENCE="$EVIDENCE
 
-### $(basename "$f") — last failure tail
+### $slug/$(basename "$f") — last failure tail
 \`\`\`
 $(tail -15 "$f")
 \`\`\`"
-      done
-    fi
-  fi
+    done
+  done
 
   echo "loop: librarian session — drafts land in .claude/skills-proposed/, nothing goes live"
   claude -p "$(cat "$TOOL_DIR/templates/HARVEST-PROMPT.md")$EVIDENCE" \
@@ -510,8 +674,8 @@ $(tail -15 "$f")
 # ---------------------------------------------------------------- main -----
 case "$CMD" in
   init)    cmd_init ;;
-  prd)     cmd_prd ;;
-  run)     cmd_run "$@" ;;
-  harvest) cmd_harvest ;;
+  prd)     migrate_legacy; cmd_prd ;;
+  run)     migrate_legacy; cmd_run "$@" ;;
+  harvest) migrate_legacy; cmd_harvest ;;
   *)       die "unknown command '$CMD' — use init | prd | run | harvest" ;;
 esac

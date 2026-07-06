@@ -6,10 +6,11 @@ knowledge artifacts.
 
 ## Read
 
-- `.loop/learnings/` — working memory from the run
-- `.loop/logs/` — iteration + verify logs (especially failures)
-- `.loop/REPORT.md`, `.loop/prd.json` — blocked stories, attempt counts
-- `.loop/NOTES.md`, `.loop/QUESTIONS.md` if present
+- `.loop/learnings/` — working memory, shared across features
+- `.loop/features/*/logs/` — iteration + verify logs (especially failures)
+- `.loop/features/*/REPORT.md`, `.loop/features/*/prd.json` — blocked
+  stories, attempt counts
+- `.loop/features/*/NOTES.md`, `.loop/features/*/QUESTIONS.md` if present
 
 ## Classify every lesson
 

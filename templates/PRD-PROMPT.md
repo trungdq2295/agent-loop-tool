@@ -11,8 +11,9 @@ is conversation.
 ## 1. Interview
 
 Ask until concrete: scope, users, main flow, edge cases, error cases,
-what "done" looks like. Also skim the codebase and `.loop/PRD.md`
-history (if any) for context — don't ask what the code already answers.
+what "done" looks like. Also skim the codebase and past features'
+`.loop/features/*/PRD.md` (if any) for context — don't ask what the
+code already answers.
 
 **Concreteness gate — non-negotiable.** Every acceptance criterion must
 be observable: a test could FAIL it. If you cannot imagine the failing
@@ -62,5 +63,8 @@ Only after explicit approval, write `.loop/prd.json` exactly:
 }
 ```
 
-Then tell the PM: "PRD frozen — run `loop.sh run` when ready." Your
-session ends; the driver validates and freezes everything after you.
+Write both files at those exact flat paths (`.loop/prd.json`,
+`.loop/PRD.md`) — the driver moves them into their feature folder and
+freezes everything after your session ends.
+
+Then tell the PM: "PRD frozen — run `loop.sh run` when ready."

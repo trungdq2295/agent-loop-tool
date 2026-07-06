@@ -22,8 +22,9 @@ echo "verify.sh: Block 1 not filled in yet" >&2; exit 1
 # Backstop against test deletion (harness §2): count may grow, never shrink.
 COUNT_FILE=".loop/test-count"
 count_tests() {  # adjust the pattern to your test framework if needed
-  grep -rE '^\s*(it|test)\(' --include='*.test.*' --include='*.spec.*' . \
-    2>/dev/null | wc -l | tr -d ' '
+  # `|| true`: zero test files must mean count 0, not a pipefail death
+  { grep -rE '^\s*(it|test)\(' --include='*.test.*' --include='*.spec.*' . \
+    2>/dev/null || true; } | wc -l | tr -d ' '
 }
 NOW="$(count_tests)"
 if [ -f "$COUNT_FILE" ]; then

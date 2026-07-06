@@ -10,4 +10,6 @@ questioning that choice — never load all pages by default.
 - [D5](D5-resume-baton.md) — mid-story continuity via git + notes baton; read before touching resume/commit rules
 - [D6](D6-skills-harvest.md) — skills: harvest phase, staged approval, project-only, high bar; read before touching learning pipeline
 - [D7](D7-verify-protection.md) — verify.sh snapshot + checksum tripwire, gated self-improvement; read before touching verify machinery
-- [D8](D8-team-adoption.md) — team adoption = design constraint; never hard-assume tracked .loop/; read before adding git assumptions (git-mode knob itself: BACKLOG, not built)
+- [D8](D8-team-adoption.md) — team adoption = design constraint; never hard-assume tracked .loop/; read before adding git assumptions
+- [D9](D9-per-feature-folders.md) — .loop/features/<slug>/ per feature; shared verify/learnings at root; sequential multi-feature, lockfile, auto-migration; read before touching layout/paths
+- [D10](D10-git-invisible-default.md) — .loop/ gitignored by default, LOOP_GIT_MODE=tracked opts in; read before touching init gitignore or sweep-commit
