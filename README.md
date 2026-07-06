@@ -19,18 +19,24 @@ Requires `claude` CLI, `jq`, and git. The target project must have an
 objective check to gate on (tests / typecheck / lint / build) — the tool is
 only as trustworthy as its `verify.sh`.
 
-The tool has four subcommands, run in order. `PROJECT` is the path to the
-repo you're working on.
+The tool has four subcommands. `PROJECT` is the path to the repo you're
+working on. Lifecycle: `init` once per project, then per feature:
+`prd` → `run` → merge → `prd` again. Each feature lives in its own
+folder under `.loop/features/<slug>/`; `verify.sh`, `PROMPT.md` and
+`learnings/` are shared across features (learnings from feature 1 make
+feature 2 cheaper).
 
-### 1. `init` — scaffold (once per feature)
+### 1. `init` — scaffold (once per project)
 
 ```bash
 loop.sh init PROJECT
 ```
 
-Creates `PROJECT/.loop/` from templates (`PROMPT.md`, `verify.sh`) and adds
-the loop's runtime artifacts to the project's `.gitignore`. Refuses if
-`.loop/` already exists — remove a stale one first.
+Creates `PROJECT/.loop/` from templates (`PROMPT.md`, `verify.sh`) and
+gitignores the whole `.loop/` dir — **the loop leaves zero trace in your
+repo** (no status noise, no chore commits, nothing in PRs). Want the
+baton in git anyway? `LOOP_GIT_MODE=tracked loop.sh init PROJECT`.
+Refuses if `.loop/` already exists.
 
 `verify.sh` Block 1 — the exam the agent can't touch — is **auto-filled**
 from `package.json` scripts when `test` / `typecheck` / `lint` exist.
@@ -46,8 +52,11 @@ loop.sh prd PROJECT
 
 Opens an interactive session: describe the feature in plain language, the
 agent drafts stories + acceptance criteria, reads them back, and you say
-**"approved"** when they're right. On approval the criteria and `verify.sh`
-are checksum-frozen. This phase needs you at the keyboard.
+**"approved"** when they're right. On approval the driver creates
+`.loop/features/<slug>/` (slug from the PRD's branch name) and
+checksum-freezes the criteria and `verify.sh` for that feature. This
+phase needs you at the keyboard. Plan as many features as you like —
+each gets its own folder.
 
 Refuses to start while `verify.sh` Block 1 is still the template stub — a
 frozen always-red exam would fail every story forever with no in-run
@@ -56,22 +65,30 @@ recovery.
 ### 3. `run` — the unattended loop
 
 ```bash
-loop.sh run PROJECT            # default cap: 25 iterations
-loop.sh run PROJECT 15         # cap at 15 iterations
+loop.sh run PROJECT                  # one open feature → auto-picked; cap 25
+loop.sh run PROJECT 15               # same, cap at 15 iterations
+loop.sh run PROJECT copy-paste       # several open features → name one
+loop.sh run PROJECT copy-paste 15
 ```
 
 One fresh session per iteration, one story at a time, verify after each,
-until every story is done or a cap/breaker stops it. Refuses a dirty tree
-(`.loop/` is exempt) and refuses to run on `main`/`master` — it checks out
-the branch named in the PRD. Writes `.loop/REPORT.md` on every exit.
+until every story is done or a cap/breaker stops it. Auto-shelves a dirty
+tree (restored on exit) and checks out the feature's branch when started
+from `main`/`master`. Writes `features/<slug>/REPORT.md` on every exit.
+A pid lockfile allows only ONE run per working tree — parallel features
+need worktrees (see `docs/BACKLOG.md`). The iteration agent reads only
+its own feature folder, so per-iteration token cost stays flat no matter
+how many features accumulate.
 
 **`run` is the only command you ever re-type.** It self-heals on start:
 
 - *Blocked stories with answered questions revive automatically.* When the
-  agent gets stuck it writes a question to `.loop/QUESTIONS.md` with an
-  `ANSWER: (pending)` line. Fill that line, re-run `loop.sh run` — the
-  story flips back to todo with a fresh attempt budget and your answer in
-  its notes. Answered questions move to `.loop/QUESTIONS-archive.md`.
+  agent gets stuck it writes a question to its feature's `QUESTIONS.md`
+  with an `ANSWER: (pending)` line. Fill that line, re-run `loop.sh run` —
+  the story flips back to todo with a fresh attempt budget and your answer
+  in its notes. Answered questions move to `QUESTIONS-archive.md`.
+- *Old flat `.loop/` layout?* Auto-migrated into `features/<slug>/` on the
+  next `prd`/`run`/`harvest` — mid-flight features survive the upgrade.
 - *`verify.sh` improved between runs?* `run` shows the diff against the
   frozen snapshot and asks one y/N to re-freeze — no PRD re-run needed.
   (Mid-run edits still kill the run; only the pre-start window is gated
@@ -104,7 +121,7 @@ Bad run? The work is on its own branch — just delete it.
 - **Fresh context per iteration** — no context rot; files are the only memory
 - **Dual-condition exit** — agent's `passes` claims AND green `verify.sh`, never one alone
 - **Frozen acceptance criteria** — checksummed at start; agent edits them → hard halt
-- **Circuit breaker** — 3 consecutive verify failures → halt, writes `.loop/BLOCKED.md`
+- **Circuit breaker** — 3 consecutive verify failures → halt, report written to the feature's `REPORT.md`
 - **Caps** — max iterations (arg 2) and per-iteration `--max-turns`
 
 ## Division of labor
