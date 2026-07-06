@@ -265,14 +265,28 @@ cmd_run() {
   [ -x "$VERIFY" ]    || die "missing or non-executable $VERIFY"
   [ -f "$SUM_FILE" ]  || die "criteria not frozen — run 'loop.sh prd' first (prd-step exit gate)"
   [ "$(criteria_sum)" = "$(cat "$SUM_FILE")" ] || die "criteria changed since freeze — re-run prd phase"
-  [ -x "$VERIFY_SNAPSHOT" ] || die "verify not frozen — run 'loop.sh prd' first (D7)"
   # An unfilled exam fails every story forever — refuse before spawning anything.
   ! grep -qF "$VERIFY_STUB_MARK" "$VERIFY" \
     || die "verify.sh Block 1 is still the template stub — fill it with real checks, then re-run (you'll be offered a re-freeze)"
+  # Half-frozen state: criteria froze (checked above) but the snapshot is
+  # missing/incomplete — prd's exit gate was interrupted between its freeze
+  # steps (crash, permission denial). The PRD itself is approved and valid;
+  # finish the freeze here instead of demanding a full interactive prd re-run.
+  if [ ! -x "$VERIFY_SNAPSHOT" ] || [ ! -f "$VERIFY_SUM_FILE" ]; then
+    echo "loop: criteria are frozen but the verify.sh snapshot is missing — prd's freeze was interrupted."
+    echo "loop: verify.sh Block 1 as it stands:"
+    sed -n '/── Block 1/,/── Block 2/p' "$VERIFY" | grep -vE '^[[:space:]]*(#|$)' | sed 's/^/loop:   | /'
+    [ -t 0 ] || die "verify not frozen — approve the freeze from a terminal (or re-run 'loop.sh prd')"
+    printf "loop: freeze this verify.sh as the exam and continue? [y/N] "
+    read -r REPLY
+    case "$REPLY" in
+      y|Y|yes|YES) freeze_verify; echo "loop: verify.sh frozen" ;;
+      *) die "declined — re-run 'loop.sh prd' to freeze properly" ;;
+    esac
   # Between-runs improvement path (D7 gated channel): verify.sh changed while
   # no run was live → show the diff, one keystroke re-freezes. The mid-run
   # tamper kill further down is untouched — this runs before any agent spawns.
-  if [ "$(verify_sum)" != "$(cat "$VERIFY_SUM_FILE")" ]; then
+  elif [ "$(verify_sum)" != "$(cat "$VERIFY_SUM_FILE")" ]; then
     echo "loop: verify.sh differs from the frozen snapshot:"
     diff -u "$VERIFY_SNAPSHOT" "$VERIFY" || true
     [ -t 0 ] || die "verify.sh changed since freeze — approve the re-freeze from a terminal (or restore the file)"

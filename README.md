@@ -76,6 +76,9 @@ the branch named in the PRD. Writes `.loop/REPORT.md` on every exit.
   frozen snapshot and asks one y/N to re-freeze — no PRD re-run needed.
   (Mid-run edits still kill the run; only the pre-start window is gated
   by you.)
+- *`prd`'s freeze interrupted?* (crash, permission denial mid-write) —
+  `run` detects the half-frozen state, shows Block 1, and offers the
+  same y/N to finish the freeze. The approved PRD is never redone.
 
 ### 4. `harvest` — capture lessons (optional)
 
