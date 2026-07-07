@@ -30,9 +30,10 @@ stories, not 1."
 
 ## 2. Distill
 
-Write `.loop/PRD.md` — meeting minutes in plain language: what was
-agreed, scope, non-goals, the stories with their acceptance criteria.
-On any future disagreement, PRD.md wins over prd.json.
+Write `PRD.md` at the exact path given in the driver directive below —
+meeting minutes in plain language: what was agreed, scope, non-goals,
+the stories with their acceptance criteria. On any future disagreement,
+PRD.md wins over prd.json.
 
 ## 3. Read back
 
@@ -43,7 +44,9 @@ on implied consent.
 
 ## 4. Compile
 
-Only after explicit approval, write `.loop/prd.json` exactly:
+Only after explicit approval, write `prd.json` at the exact path given
+in the driver directive below, in exactly this shape (the `branch` value
+also comes from the directive):
 
 ```json
 {
@@ -63,8 +66,8 @@ Only after explicit approval, write `.loop/prd.json` exactly:
 }
 ```
 
-Write both files at those exact flat paths (`.loop/prd.json`,
-`.loop/PRD.md`) — the driver moves them into their feature folder and
-freezes everything after your session ends.
+The feature folder already exists — write both files directly into it,
+never at `.loop/` root. The driver validates and freezes everything
+after your session ends.
 
 Then tell the PM: "PRD frozen — run `loop.sh run` when ready."

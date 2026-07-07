@@ -48,16 +48,22 @@ freeze an unfilled stub, so this can't be silently skipped.
 ### 2. `prd` — plan the work (interactive)
 
 ```bash
-loop.sh prd PROJECT
+loop.sh prd PROJECT copy-paste    # label = folder + branch name
+loop.sh prd PROJECT               # prompts for a label; blank → timestamp
 ```
 
-Opens an interactive session: describe the feature in plain language, the
-agent drafts stories + acceptance criteria, reads them back, and you say
-**"approved"** when they're right. On approval the driver creates
-`.loop/features/<slug>/` (slug from the PRD's branch name) and
-checksum-freezes the criteria and `verify.sh` for that feature. This
-phase needs you at the keyboard. Plan as many features as you like —
-each gets its own folder.
+The label is a *working* name (like a branch name — rough is fine; the
+interview settles the real feature name). The driver creates
+`.loop/features/<label>/` **before** the session and the agent writes
+`prd.json`/`PRD.md` directly into it; the branch is forced to
+`loop/<label>`. Describe the feature in plain language, the agent drafts
+stories + acceptance criteria, and you say **"approved"** when they're
+right. On approval the criteria and `verify.sh` are checksum-frozen for
+that feature. Needs you at the keyboard.
+
+Existing labels are protected: an open feature → refuse + show status; a
+completed one → refuse, pick `<label>-v2`; a feature whose freeze was
+interrupted mid-write → one y/N finishes it, no new interview.
 
 Refuses to start while `verify.sh` Block 1 is still the template stub — a
 frozen always-red exam would fail every story forever with no in-run
