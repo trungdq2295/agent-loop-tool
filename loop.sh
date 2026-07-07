@@ -5,7 +5,7 @@
 #
 # Usage:
 #   loop.sh init <project-dir>                        scaffold .loop/ from templates (once per project)
-#   loop.sh prd <project-dir>                         Phase 0: interactive PRD → new feature folder
+#   loop.sh prd <project-dir> [feature-label]         Phase 0: interactive PRD → new feature folder
 #   loop.sh run <project-dir> [feature] [max-iters]   Phase 1: unattended loop (feature optional when only one is open)
 #   loop.sh harvest <project-dir>                     Phase 3: librarian session (mines all features)
 #
@@ -312,34 +312,78 @@ cmd_prd() {
      Genuinely exotic runner? LOOP_NO_TEST_GATE=1 skips this gate."
   fi
 
-  echo "loop: starting interactive PRD session ($MODEL_PRD) — say 'approved' to finish"
-  claude --model "$MODEL_PRD" "$(cat "$TOOL_DIR/templates/PRD-PROMPT.md")"
-
-  # Phase 0 exit gate (prd-step.md): validate, then relocate + freeze.
-  # The PRD agent writes flat .loop/prd.json + .loop/PRD.md; the driver owns
-  # the features/ layout, so it derives the slug and moves them into place.
-  local FLAT="$LOOP_DIR/prd.json"
-  [ -f "$FLAT" ] || die "PRD session ended without $FLAT"
-  jq -e '.feature and .branch and (.stories | length > 0)' "$FLAT" >/dev/null \
-    || die "prd.json invalid: need feature, branch, stories[]"
-  jq -e '[.stories[] | select((.id and .story and (.acceptance|length>0)) | not)] | length == 0' \
-    "$FLAT" >/dev/null || die "prd.json invalid: every story needs id, story, acceptance[]"
-
-  local slug; slug="$(slug_from_branch "$(jq -r '.branch' "$FLAT")")"
-  [ -n "$slug" ] || die "could not derive a feature slug from branch '$(jq -r '.branch' "$FLAT")'"
+  # Feature label = folder + branch name, chosen by the HUMAN up front
+  # (owner call 2026-07-06). A rough working label is fine — the interview
+  # refines the real feature name inside prd.json/PRD.md. Blank → timestamp
+  # placeholder. The folder exists BEFORE the session and the agent writes
+  # directly into it: there is no move step left to strand files when a
+  # session dies (the flat-then-relocate design broke exactly that way).
+  local NAME="${3:-}"
+  if [ -z "$NAME" ] && [ -t 0 ]; then
+    printf "loop: feature label (folder + branch name; blank → timestamp): "
+    read -r NAME
+  fi
+  [ -n "$NAME" ] || NAME="feature-$(date +%m%d-%H%M)"
+  local slug; slug="$(slug_from_branch "$NAME")"
+  [ -n "$slug" ] || die "label '$NAME' sanitizes to nothing — use letters/digits/dashes"
   select_feature "$slug"
-  [ -d "$FEAT_DIR" ] && die "feature '$slug' already exists (features/$slug) — pick a different branch name in the PRD"
-  mkdir -p "$FEAT_DIR"
-  mv "$FLAT" "$PRD_JSON"
-  [ -f "$LOOP_DIR/PRD.md" ] && mv "$LOOP_DIR/PRD.md" "$FEAT_DIR/PRD.md"
 
+  # Existing-folder handling: never touch an existing feature destructively.
+  if [ -f "$PRD_JSON" ]; then
+    if [ ! -f "$SUM_FILE" ]; then
+      # PRD written but freeze never completed (interrupted session) —
+      # finish the gate, don't redo the approved interview.
+      echo "loop: feature '$slug' has a prd.json but its freeze never completed."
+      [ -t 0 ] || die "finish it from a terminal, or delete .loop/features/$slug/"
+      printf "loop: validate + freeze it now (no new interview)? [y/N] "
+      read -r REPLY
+      case "$REPLY" in
+        y|Y|yes|YES) finish_prd_gate; return ;;
+        *) die "declined — delete .loop/features/$slug/ to start this label over" ;;
+      esac
+    fi
+    if jq -e '[.stories[].status] | all(. == "done")' "$PRD_JSON" >/dev/null 2>&1; then
+      die "feature '$slug' is already completed — pick a new label (e.g. ${slug}-v2)"
+    fi
+    die "feature '$slug' is open — status:
+$(jq -r '.stories[] | "       \(.id): \(.status)"' "$PRD_JSON")
+     Resume it: loop.sh run $PROJECT $slug — or pick another label for new work."
+  fi
+  mkdir -p "$FEAT_DIR"
+
+  echo "loop: feature '$slug' — folder ready at .loop/features/$slug/"
+  echo "loop: starting interactive PRD session ($MODEL_PRD) — say 'approved' to finish"
+  claude --model "$MODEL_PRD" "$(cat "$TOOL_DIR/templates/PRD-PROMPT.md")
+
+## Driver directive
+The feature folder already exists. Write your two output files EXACTLY here:
+- .loop/features/$slug/prd.json
+- .loop/features/$slug/PRD.md
+In prd.json set \"branch\": \"loop/$slug\" — do not invent another branch name."
+
+  finish_prd_gate
+}
+
+# Phase 0 exit gate (prd-step.md): validate + normalize + freeze, in place.
+# Separate function so an interrupted session can be finished later without
+# re-running the interview.
+finish_prd_gate() {
+  [ -f "$PRD_JSON" ] || die "PRD session ended without $PRD_JSON"
+  jq -e '.feature and (.stories | length > 0)' "$PRD_JSON" >/dev/null \
+    || die "prd.json invalid: need feature, stories[]"
+  jq -e '[.stories[] | select((.id and .story and (.acceptance|length>0)) | not)] | length == 0' \
+    "$PRD_JSON" >/dev/null || die "prd.json invalid: every story needs id, story, acceptance[]"
+
+  # Driver owns the branch name — force it to match the folder regardless
+  # of what the agent wrote, so folder/branch/state never drift apart.
+  prd_set '.branch = $b' --arg b "loop/$SLUG"
   # Normalize driver-owned fields regardless of what the agent wrote.
   prd_set '.stories[] |= (.passes = false | .status = "todo" | .attempts = 0 | .notes //= "")'
 
   criteria_sum > "$SUM_FILE"
   freeze_verify
 
-  echo "loop: ready — feature '$slug', $(jq '.stories | length' "$PRD_JSON") stories, criteria + verify frozen"
+  echo "loop: ready — feature '$SLUG', $(jq '.stories | length' "$PRD_JSON") stories, criteria + verify frozen"
   echo "loop: next: loop.sh run $PROJECT"
 }
 
@@ -696,7 +740,7 @@ $(tail -15 "$f")
 # ---------------------------------------------------------------- main -----
 case "$CMD" in
   init)    cmd_init ;;
-  prd)     migrate_legacy; cmd_prd ;;
+  prd)     migrate_legacy; cmd_prd "$@" ;;
   run)     migrate_legacy; cmd_run "$@" ;;
   harvest) migrate_legacy; cmd_harvest ;;
   *)       die "unknown command '$CMD' — use init | prd | run | harvest" ;;
