@@ -230,29 +230,35 @@ cmd_init() {
   cp "$TOOL_DIR/templates/verify.sh" "$LOOP_DIR/verify.sh"
   chmod +x "$LOOP_DIR/verify.sh"
 
-  # Auto-fill Block 1 from package.json scripts — the unfilled stub is the
-  # one mistake that dead-locks a whole run (frozen exam that always fails),
-  # so the common case must need zero hand-editing. Exotic projects keep the
-  # stub and get the EDIT warning below.
-  local FILLED=""
+  # Auto-fill Block 1 by detecting the project's ecosystem — the unfilled
+  # stub is the one mistake that dead-locks a whole run (frozen exam that
+  # always fails), so the common cases must need zero hand-editing. First
+  # marker wins; anything undetected keeps the stub + EDIT warning below.
+  # Detectors today: npm, maven, gradle. Python/Go/Rust/Make: docs/BACKLOG.md.
+  local FILLED="" CMDS=""
   if [ -f "$PROJECT/package.json" ]; then
-    local s CMDS=""
+    local s
     for s in test typecheck lint; do
       jq -e --arg s "$s" '.scripts[$s]' "$PROJECT/package.json" >/dev/null 2>&1 \
         && CMDS="${CMDS}npm run $s\n"
     done
-    if [ -n "$CMDS" ]; then
-      CMDS="${CMDS%\\n}"
-      awk -v cmds="$CMDS" '
-        /^# REPLACE these/ { print "# Auto-filled from package.json scripts (loop.sh init) — adjust if needed:"; next }
-        index($0, "Block 1 not filled in yet") { print cmds; next }
-        /^# npm test$/ || /^# npx tsc --noEmit$/ || /^# npm run lint$/ { next }
-        { print }
-      ' "$LOOP_DIR/verify.sh" > "$LOOP_DIR/verify.sh.tmp" \
-        && mv "$LOOP_DIR/verify.sh.tmp" "$LOOP_DIR/verify.sh"
-      chmod +x "$LOOP_DIR/verify.sh"
-      FILLED="$(printf '%b' "$CMDS" | tr '\n' ',' | sed 's/,/, /g')"
-    fi
+    CMDS="${CMDS%\\n}"
+  elif [ -f "$PROJECT/pom.xml" ]; then
+    CMDS="mvn -q verify"
+  elif [ -x "$PROJECT/gradlew" ]; then
+    CMDS="./gradlew check"
+  elif [ -f "$PROJECT/build.gradle" ] || [ -f "$PROJECT/build.gradle.kts" ]; then
+    CMDS="gradle check"
+  fi
+  if [ -n "$CMDS" ]; then
+    awk -v cmds="$CMDS" '
+      /^# REPLACE this line/ { print "# Auto-filled by loop.sh init from detected project type — adjust if needed:"; next }
+      index($0, "Block 1 not filled in yet") { print cmds; next }
+      { print }
+    ' "$LOOP_DIR/verify.sh" > "$LOOP_DIR/verify.sh.tmp" \
+      && mv "$LOOP_DIR/verify.sh.tmp" "$LOOP_DIR/verify.sh"
+    chmod +x "$LOOP_DIR/verify.sh"
+    FILLED="$(printf '%b' "$CMDS" | tr '\n' ',' | sed 's/,/, /g')"
   fi
 
   # D10: invisible to git by default — one ignore line, zero repo noise.
@@ -272,7 +278,7 @@ cmd_init() {
 
   echo "loop: scaffolded $LOOP_DIR"
   if [ -n "$FILLED" ]; then
-    echo "loop: verify.sh Block 1 auto-filled from package.json: $FILLED — review it"
+    echo "loop: verify.sh Block 1 auto-filled from detected project type: $FILLED — review it"
   else
     echo "loop: EDIT $LOOP_DIR/verify.sh — fill Block 1 with this project's real checks"
   fi
@@ -289,6 +295,22 @@ cmd_prd() {
   # dead-lock every future run (always-red verify, no in-run recovery).
   ! grep -qF "$VERIFY_STUB_MARK" "$VERIFY" \
     || die "verify.sh Block 1 is still the template stub — fill it with this project's real checks first"
+  # Exam-quality gate (owner call 2026-07-06): Block 1 must invoke a test
+  # runner. Without one, green degrades to "it compiles" and the agent's
+  # passes-claim becomes the only correctness signal — self-grading, the
+  # exact failure this tool exists to prevent. The suite may start EMPTY
+  # (red-first grows it story by story); only the invocation is required.
+  # Comments are stripped first so the template's example lines can't pass.
+  # Goal-specific on purpose: `mvn compile` / `gradlew compileJava` build
+  # without running tests and must NOT satisfy the gate.
+  local RUNNER_PATTERN='npm (run )?test|npx (vitest|jest|mocha)|yarn test|pnpm test|mvn .*(test|verify|install|package)|gradlew? .*(check|test|build)|go test|pytest|cargo test|make test|dotnet test|phpunit|rspec'
+  if [ "${LOOP_NO_TEST_GATE:-0}" != "1" ] \
+    && ! grep -vE '^[[:space:]]*#' "$VERIFY" | grep -qE "$RUNNER_PATTERN"; then
+    die "no test-runner invocation in verify.sh — the exam would only prove 'it compiles'.
+     Wire one (npm test / mvn -q verify / ./gradlew check / pytest / go test ./...);
+     the suite may start empty — the loop grows it story by story.
+     Genuinely exotic runner? LOOP_NO_TEST_GATE=1 skips this gate."
+  fi
 
   echo "loop: starting interactive PRD session ($MODEL_PRD) — say 'approved' to finish"
   claude --model "$MODEL_PRD" "$(cat "$TOOL_DIR/templates/PRD-PROMPT.md")"

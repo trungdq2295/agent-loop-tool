@@ -22,6 +22,21 @@ Two loops in one working tree can never work: they fight over
 - merge conflicts between parallel features remain the human's problem —
   the tool only isolates the runs, it cannot un-conflict the code
 
+## More init auto-fill detectors (python, go, rust, make)
+
+Trigger: first teammate on that stack adopts the tool — build the
+detector against THEIR real repo, not a guess (owner call 2026-07-06:
+js + java first, others when needed).
+
+Sketch, same first-marker-wins ladder as npm/maven/gradle in cmd_init:
+- `go.mod`        → `go build ./...` + `go vet ./...` + `go test ./...`
+- `Cargo.toml`    → `cargo build` + `cargo test`
+- `pyproject.toml` / `pytest.ini` → `pytest`
+- `Makefile` with a `test:` target → `make test`
+
+Until then these stacks fill Block 1 by hand (3 lines, once per
+project); the prd test-runner gate already recognizes their runners.
+
 ## Defender/endpoint-interruption hardening
 
 Trigger: a second freeze/state write gets corrupted by an external

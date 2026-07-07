@@ -39,10 +39,11 @@ baton in git anyway? `LOOP_GIT_MODE=tracked loop.sh init PROJECT`.
 Refuses if `.loop/` already exists.
 
 `verify.sh` Block 1 — the exam the agent can't touch — is **auto-filled**
-from `package.json` scripts when `test` / `typecheck` / `lint` exist.
-Review it. No `package.json` (or no matching scripts)? Fill Block 1 by
-hand — `prd` refuses to freeze an unfilled stub, so this can't be
-silently skipped.
+by project-type detection: `package.json` scripts (`npm run test/
+typecheck/lint`), `pom.xml` (`mvn -q verify`), or gradle (`./gradlew
+check`). Review it. Other stacks (python, go, …) fill Block 1 by hand —
+any command works, the driver only reads the exit code. `prd` refuses to
+freeze an unfilled stub, so this can't be silently skipped.
 
 ### 2. `prd` — plan the work (interactive)
 
@@ -60,7 +61,11 @@ each gets its own folder.
 
 Refuses to start while `verify.sh` Block 1 is still the template stub — a
 frozen always-red exam would fail every story forever with no in-run
-recovery.
+recovery. Also refuses when Block 1 invokes **no test runner**: without
+one, green only proves "it compiles" and the agent grades itself. The
+suite may start empty — the loop grows it story by story (red-first);
+only the runner invocation is required. Exotic runner?
+`LOOP_NO_TEST_GATE=1` skips the gate.
 
 ### 3. `run` — the unattended loop
 

@@ -11,20 +11,23 @@ set -euo pipefail
 # ── Block 1: LAYER-1 INVARIANTS — the ONLY per-project part ─────────────
 # "Is the codebase still healthy?" Feature-agnostic, permanent, 2-4 lines.
 # First failing command fails the whole script (set -e) — that IS the gate.
+# ANY objective command works — the driver only reads the exit code:
+#   npm test          go test ./...      mvn -q verify     ./gradlew check
+#   pytest            cargo test         make test         docker build .
+#   curl -fsS localhost:8080/health
 #
-# REPLACE these with your project's real checks:
+# REPLACE this line with your project's real checks:
 echo "verify.sh: Block 1 not filled in yet" >&2; exit 1
-# npm test
-# npx tsc --noEmit
-# npm run lint
 
 # ── Block 2: TEST-COUNT RATCHET — generic, keep as-is ────────────────────
 # Backstop against test deletion (harness §2): count may grow, never shrink.
 COUNT_FILE=".loop/test-count"
-count_tests() {  # adjust the pattern to your test framework if needed
+count_tests() {  # covers js/ts, go, python, java, rust — adjust if yours is missing
   # `|| true`: zero test files must mean count 0, not a pipefail death
-  { grep -rE '^\s*(it|test)\(' --include='*.test.*' --include='*.spec.*' . \
-    2>/dev/null || true; } | wc -l | tr -d ' '
+  { grep -rE '^\s*(it|test)\(|^\s*def test_|^\s*func Test[A-Z0-9_]|@Test\b|#\[(tokio::)?test\]' \
+    --include='*.test.*' --include='*.spec.*' --include='*_test.go' \
+    --include='test_*.py' --include='*_test.py' --include='*Test.java' \
+    --include='*.rs' . 2>/dev/null || true; } | wc -l | tr -d ' '
 }
 NOW="$(count_tests)"
 if [ -f "$COUNT_FILE" ]; then
