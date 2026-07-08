@@ -31,8 +31,10 @@ Protocol, in order:
    THEN run the full suite once. A turn-cap cutoff during the full run
    must not lose finished work.
 5. Full suite green → set that story's `"passes": true` in your
-   feature's prd.json and commit it. The flag is the deliverable — a
-   finished story without it costs the run a whole extra iteration.
+   feature's prd.json. Commit it ONLY if `.loop/` is git-tracked in
+   this project; when `.loop/` is gitignored the saved file itself is
+   the deliverable — never commit it. Either way, a finished story
+   without the flag costs the run a whole extra iteration.
 
 ## Test discipline — turns are your scarcest resource
 
@@ -63,6 +65,9 @@ Protocol, in order:
 
 - NEVER edit any story's `acceptance`, `status`, or `attempts` — driver-owned.
 - NEVER edit `.loop/verify.sh` or any `criteria.sum`.
+- NEVER force-add (`git add -f`) gitignored files. When `.loop/` is
+  gitignored, no `.loop/` path may appear in any commit — the loop must
+  leave zero trace in this repo's history.
 - NEVER read or touch other folders under `.loop/features/` — only yours.
 - NEVER delete, skip (`.skip`/`xit`), or weaken existing tests to get
   green. Updating a test is allowed only when your story legitimately
