@@ -601,7 +601,8 @@ Verify is ALREADY GREEN after the previous session on $SID, but the story's
 \"passes\" flag was never set. The work is most likely complete and only the
 claim is missing. Confirm the acceptance criteria are genuinely met (run the
 story's own tests once), then set \"passes\": true in your feature's prd.json
-and commit. Do NOT rewrite or re-implement anything."
+(commit it only if .loop/ is git-tracked in this project). Do NOT rewrite or
+re-implement anything."
     fi
 
     echo ""
@@ -675,6 +676,19 @@ and commit. Do NOT rewrite or re-implement anything."
     if [ "$(git_mode)" = "tracked" ]; then
       git add .loop 2>/dev/null || true
       git commit -qm "chore(loop): $SLUG iter $i state — $SID" -- .loop 2>/dev/null || true
+    elif [ -n "$(git ls-files .loop 2>/dev/null)" ]; then
+      # Ignored mode but .loop paths are tracked — the agent force-added
+      # past the gitignore (prompt violation). Untrack now (files stay on
+      # disk): a tracked prd.json the driver then mutates would ship baton
+      # state in the PR AND block the exit-trap checkout back to the
+      # owner's branch. Net branch diff for .loop returns to zero.
+      # Plain commit of ONLY the staged deletions: `git commit -- .loop`
+      # would commit the working-tree FILE contents (re-adding it), not
+      # the staged untrack. reset first so nothing else rides along.
+      git reset -q 2>/dev/null || true
+      git rm -r -q --cached .loop 2>/dev/null || true
+      git commit -qm "chore(loop): untrack .loop — gitignored state must not ship" 2>/dev/null || true
+      echo "loop: WARN agent committed .loop despite ignored mode — auto-untracked (iteration $i)" >&2
     fi
 
     if all_settled; then break; fi
