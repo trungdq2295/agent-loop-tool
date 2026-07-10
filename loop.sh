@@ -608,20 +608,22 @@ re-implement anything."
     echo ""
     echo "=== iteration $i/$MAX_ITERS — feature $SLUG story $SID attempt $((ATTEMPTS + 1)) ($MODEL, $(date +%H:%M:%S)) ==="
 
-    claude -p "$PROMPT_TEXT" \
-      --model "$MODEL" \
-      --allowedTools "$ALLOWED_TOOLS" \
-      --max-turns "$MAX_TURNS" \
-      2>&1 | tee "$LOGS/iter-$i.log" || true
-
     # Usage-limit death is not the story's fault: no attempt counted, no
-    # verify run (session may have died mid-edit). Sleep and retry the
-    # same story — burns an iteration slot, never a ladder rung.
-    if grep -qiE "hit your (session|usage) limit" "$LOGS/iter-$i.log"; then
-      echo "loop: usage limit hit — sleeping ${LIMIT_BACKOFF}s, attempt NOT counted"
+    # verify run (session may have died mid-edit). Retry the SAME slot in
+    # place — a limit outage lasting hours must not eat MAX_ITERS slots
+    # and CAP a multi-day run. The owner's contract: wait out the window,
+    # never lose progress. Ctrl-C is safe anytime (state is files+git;
+    # next `loop.sh run` resumes).
+    while :; do
+      claude -p "$PROMPT_TEXT" \
+        --model "$MODEL" \
+        --allowedTools "$ALLOWED_TOOLS" \
+        --max-turns "$MAX_TURNS" \
+        2>&1 | tee "$LOGS/iter-$i.log" || true
+      grep -qiE "hit your (session|usage) limit" "$LOGS/iter-$i.log" || break
+      echo "loop: usage limit hit — sleeping ${LIMIT_BACKOFF}s, iteration slot NOT consumed"
       sleep "$LIMIT_BACKOFF"
-      continue
-    fi
+    done
 
     # D2: gaming the exam kills the run.
     if [ "$(criteria_sum)" != "$FROZEN_SUM" ]; then
