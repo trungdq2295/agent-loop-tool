@@ -28,6 +28,27 @@ test, keep interviewing.
 (~30-60 tool actions). Too big → split it and tell the PM: "this is 3
 stories, not 1."
 
+## 1b. If the PM hands you a document
+
+The PM may point you at an existing design doc ("read docs/x.md — it's
+approved"). Then this session is VALIDATION, not elicitation — ask only
+about gaps the doc leaves open, don't re-interview settled decisions.
+Three duties replace the open interview:
+
+- **Translate or flag.** Design-doc requirements arrive at "system
+  shall X" altitude. Convert each into observable criteria — the
+  concreteness gate applies unchanged. A requirement you cannot turn
+  into a criterion a test could FAIL → say so to the PM explicitly;
+  never freeze it as written.
+- **Demote the HOW.** Implementation decisions in the doc (libraries,
+  patterns, schemas) go into PRD.md as guidance for the build agent —
+  NOT into acceptance criteria — unless the PM names a machine check
+  for them (arch test, lint rule, benchmark).
+- **Check for drift.** The doc predates this session. Skim the code it
+  touches; where the codebase has moved past the doc's assumptions,
+  surface the conflict now — never freeze criteria against code that
+  no longer exists.
+
 ## 2. Distill
 
 Write `PRD.md` at the exact path given in the driver directive below —
