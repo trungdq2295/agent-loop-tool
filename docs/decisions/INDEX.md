@@ -13,3 +13,4 @@ questioning that choice — never load all pages by default.
 - [D8](D8-team-adoption.md) — team adoption = design constraint; never hard-assume tracked .loop/; read before adding git assumptions
 - [D9](D9-per-feature-folders.md) — .loop/features/<slug>/ per feature; shared verify/learnings at root; sequential multi-feature, lockfile, auto-migration; read before touching layout/paths
 - [D10](D10-git-invisible-default.md) — .loop/ gitignored by default, LOOP_GIT_MODE=tracked opts in; read before touching init gitignore or sweep-commit
+- [D11](D11-cross-repo-workspace.md) — cross-repo = assembled workspace (one repo, inner .git stripped); conditional DESIGN.md gate (spec precision ∝ blast radius); intelligence in prompts not bash, future extraction to skill-builder repo; read before any multi-repo work
