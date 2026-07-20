@@ -50,6 +50,20 @@ Protocol, in order:
 - Don't know the narrow invocation? Check `.loop/learnings/` first,
   project docs second — and once found, record it as a learning.
 
+## UI stories (browser tests) — extra rules
+
+- Red-first applies unchanged: the acceptance e2e spec must FAIL
+  (element absent, wrong text) before you implement.
+- Locate by role/label (`getByRole`, `getByLabel`, `getByText`) — never
+  CSS/XPath selectors; they couple the test to markup, not behavior.
+- NEVER `waitForTimeout`/sleep — rely on the framework's auto-waiting
+  assertions. A test needing a sleep is asserting the wrong signal.
+- NEVER add screenshot-baseline assertions (`toHaveScreenshot`): a
+  baseline generated on first run passes without ever failing — it
+  proves nothing and violates red-first. Assert behavior, not pixels.
+- Aesthetic criteria ("looks right") are not yours to verify — if a
+  story seems to demand one, that's a QUESTIONS.md case, not a test.
+
 ## Before your session ends — ALWAYS, even if unfinished
 
 1. Update your story's `notes` in your feature's prd.json: what's done,
