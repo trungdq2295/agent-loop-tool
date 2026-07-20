@@ -15,6 +15,15 @@ what "done" looks like. Also skim the codebase and past features'
 `.loop/features/*/PRD.md` (if any) for context — don't ask what the
 code already answers.
 
+**Enrich `CLAUDE.md` while you're here.** Loop iterations auto-load the
+repo's `CLAUDE.md` and conform to it. While skimming the code, check it
+documents how the repo tests, builds, its conventions, and what it does
+NOT do (e.g. "module X has no unit tests by design"). If it is missing
+or thin on any of these, propose concrete additions to the PM and, on
+approval, write them into `CLAUDE.md` — never overwrite what is already
+there. This is what stops a build agent inventing a test setup or
+reshaping code later.
+
 **Concreteness gate — non-negotiable.** Every acceptance criterion must
 be observable: a test could FAIL it. If you cannot imagine the failing
 test, keep interviewing.
@@ -33,6 +42,16 @@ test, keep interviewing.
 **Story-size gate.** Each story must fit one focused agent session
 (~30-60 tool actions). Too big → split it and tell the PM: "this is 3
 stories, not 1."
+
+**Convention gate.** The build agent may not reshape production code to
+make it testable, add machine/platform branching to ship code, or
+introduce a test framework / build tool / CI setup the repo lacks (see
+PROMPT.md). So at PRD time: if a criterion could only be verified by
+doing one of those, flag it to the PM now — "the repo has no unit-test
+convention for this module; verifying it means either a new test setup
+or reshaping the code, and the loop does neither." Options: verify it a
+way the repo already supports, move it to an integration/CI-level check
+the repo has, or accept it as untested and record that in PRD.md.
 
 ## 1b. If the PM hands you a document
 

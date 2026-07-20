@@ -50,6 +50,23 @@ Protocol, in order:
 - Don't know the narrow invocation? Check `.loop/learnings/` first,
   project docs second — and once found, record it as a learning.
 
+## Tests conform to the code — never the reverse
+
+- Test the code as it is. Do NOT refactor, split, or restructure
+  production code for the sole purpose of making it testable. If a unit
+  test cannot be added following THIS codebase's existing convention,
+  SKIP it: write the reason to `<feature-dir>/QUESTIONS.md` and move on.
+  An untested-but-honest story is acceptable; a codebase reshaped for a
+  test's convenience is not.
+- Do NOT add environment or platform branching to production code to make
+  a test or its setup work — no `os === "macOS"`, host-specific paths, or
+  machine-local flags in shipped code. Test setup belongs in the test/CI
+  layer, never in the code that ships.
+- Follow this repo's `CLAUDE.md` for how it tests, builds, and its
+  conventions. A story that needs a cross-cutting pattern the repo does
+  NOT already have (a new test framework, build tool, or CI setup) →
+  QUESTIONS.md, stop. Never introduce one unilaterally.
+
 ## UI stories (browser tests) — extra rules
 
 - Red-first applies unchanged: the acceptance e2e spec must FAIL
