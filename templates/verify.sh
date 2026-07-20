@@ -14,7 +14,9 @@ set -euo pipefail
 # ANY objective command works — the driver only reads the exit code:
 #   npm test          go test ./...      mvn -q verify     ./gradlew check
 #   pytest            cargo test         make test         docker build .
-#   curl -fsS localhost:8080/health
+#   curl -fsS localhost:8080/health      npx playwright test
+# UI projects: let playwright.config's webServer boot the dev server —
+# this script stays server-lifecycle-free.
 #
 # REPLACE this line with your project's real checks:
 echo "verify.sh: Block 1 not filled in yet" >&2; exit 1

@@ -21,8 +21,14 @@ test, keep interviewing.
 
 - ✅ "expired token → request returns 410"
 - ✅ "empty cart → checkout button disabled"
+- ✅ "submit with empty email → text 'Email required' visible under the
+  field; nothing sent to the server"
 - ❌ "handles errors gracefully" → push back: "gracefully = what,
   exactly? what does the user see?"
+- ❌ "form looks clean / is user-friendly" → push back: looks are not
+  machine-checkable. Extract the behavior behind the wish ("error
+  appears next to the field, not in a global banner") or move it to
+  PRD.md non-goals for human review — never freeze it as a criterion.
 
 **Story-size gate.** Each story must fit one focused agent session
 (~30-60 tool actions). Too big → split it and tell the PM: "this is 3
