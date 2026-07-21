@@ -261,6 +261,28 @@ cmd_init() {
     FILLED="$(printf '%b' "$CMDS" | tr '\n' ',' | sed 's/,/, /g')"
   fi
 
+  # D12: CI is the reproducibility oracle. A verify.sh that passes only on
+  # the author's laptop is fake green — it gates on nothing. If the repo
+  # has CI, Block 1 must mirror the CI test command (CI has no laptop). We
+  # detect CI presence and warn loudly; we do NOT parse the CI YAML (the
+  # test command is spread across `run:` steps with no reliable field —
+  # brittle to extract, so the human/agent confirms it against the file).
+  local CI_HINT=""
+  local ci
+  for ci in .github/workflows .gitlab-ci.yml .circleci/config.yml \
+            Jenkinsfile azure-pipelines.yml .travis.yml bitbucket-pipelines.yml; do
+    if [ -e "$PROJECT/$ci" ]; then CI_HINT="$ci"; break; fi
+  done
+
+  # D12: repo knowledge lives in CLAUDE.md (auto-loaded every iteration).
+  # Seed a stub ONLY when absent — never touch a repo's existing CLAUDE.md
+  # (clobbering a curated one is an instant-distrust event, D8).
+  local CLAUDE_SEEDED=""
+  if [ ! -f "$PROJECT/CLAUDE.md" ] && [ -f "$TOOL_DIR/templates/CLAUDE-SEED.md" ]; then
+    cp "$TOOL_DIR/templates/CLAUDE-SEED.md" "$PROJECT/CLAUDE.md"
+    CLAUDE_SEEDED="1"
+  fi
+
   # D10: invisible to git by default — one ignore line, zero repo noise.
   # LOOP_GIT_MODE=tracked keeps the v2 baton-in-git behavior.
   echo "${LOOP_GIT_MODE:-ignored}" > "$MODE_FILE"
@@ -281,6 +303,16 @@ cmd_init() {
     echo "loop: verify.sh Block 1 auto-filled from detected project type: $FILLED — review it"
   else
     echo "loop: EDIT $LOOP_DIR/verify.sh — fill Block 1 with this project's real checks"
+  fi
+  if [ -n "$CI_HINT" ]; then
+    echo "loop: CI detected ($CI_HINT) — verify.sh Block 1 MUST mirror the CI test"
+    echo "      command, not a laptop-only check. A gate that passes only on your"
+    echo "      machine is fake green. Cross-check Block 1 against $CI_HINT."
+  fi
+  if [ -n "$CLAUDE_SEEDED" ]; then
+    echo "loop: no CLAUDE.md found — seeded a stub at $PROJECT/CLAUDE.md. Fill it"
+    echo "      (how the repo tests/builds, conventions, what it does NOT do); loop"
+    echo "      agents auto-load it and conform to it. The PRD session helps enrich it."
   fi
   echo "loop: then run: loop.sh prd $PROJECT"
 }
@@ -535,8 +567,28 @@ cmd_run() {
   # ignored path in a stash pathspec makes git error out — exclude it
   # only in tracked mode. Decided by the init-time marker, not by live
   # gitignore state (see git_mode).
+  #
+  # D12: the run needs the repo's CLAUDE.md visible on disk — every loop
+  # iteration auto-loads it for the repo's test/build conventions. Keep it
+  # OUT of the shelf so it survives even when the owner has filled but not
+  # committed it (an unattended run must not depend on a remembered commit;
+  # a shelved-away CLAUDE.md would leave the agent blind and inventing).
+  # Same gitignored-path caveat as .loop above → skip the exclude if
+  # CLAUDE.md is ignored (it would not be shelved anyway). Spec is built
+  # explicitly per case: `set -u` makes empty-array expansion unsafe on the
+  # bash 3.2 that ships with macOS.
+  local claude_ok=""
+  [ -f CLAUDE.md ] && ! git check-ignore -q CLAUDE.md 2>/dev/null && claude_ok=1
   local SHELF_SPEC=(-- .)
-  [ "$(git_mode)" = "tracked" ] && SHELF_SPEC=(-- . ':(exclude).loop')
+  if [ "$(git_mode)" = "tracked" ]; then
+    if [ -n "$claude_ok" ]; then
+      SHELF_SPEC=(-- . ':(exclude).loop' ':(exclude)CLAUDE.md')
+    else
+      SHELF_SPEC=(-- . ':(exclude).loop')
+    fi
+  elif [ -n "$claude_ok" ]; then
+    SHELF_SPEC=(-- . ':(exclude)CLAUDE.md')
+  fi
   if [ -n "$(git status --porcelain "${SHELF_SPEC[@]}")" ]; then
     git stash push --include-untracked -q -m "loop-tool auto-shelf" "${SHELF_SPEC[@]}"
     git update-ref "$SHELF_REF" "$(git rev-parse stash@{0})"  # keep alive off-stack

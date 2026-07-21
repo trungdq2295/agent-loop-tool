@@ -45,6 +45,18 @@ check`). Review it. Other stacks (python, go, …) fill Block 1 by hand —
 any command works, the driver only reads the exit code. `prd` refuses to
 freeze an unfilled stub, so this can't be silently skipped.
 
+If the repo has **CI** (`.github/workflows`, `.gitlab-ci.yml`, a
+`Jenkinsfile`, …), `init` says so and warns that Block 1 must **mirror
+the CI test command** — CI is the reproducibility oracle. A `verify.sh`
+that goes green only on your laptop gates on nothing (D12).
+
+`init` also seeds a **`CLAUDE.md`** stub when the repo has none — the
+file every loop iteration auto-loads to learn how the repo tests, builds,
+and what it deliberately does *not* do. An existing `CLAUDE.md` is never
+touched; the `prd` session helps enrich it. This is what keeps a build
+agent from inventing a test setup or reshaping code to make it testable
+(D12).
+
 ### 2. `prd` — plan the work (interactive)
 
 ```bash
