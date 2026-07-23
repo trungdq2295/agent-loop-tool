@@ -1,10 +1,11 @@
 # UI gate — objective browser checks for UI work
 
 The default `verify.sh` gate proves a codebase *compiles and its unit tests
-pass*. For UI work that isn't enough: the thing that matters ("the Live badge is
-green", "Approve shows only on a live-request row", "the row opens a modal") is
-**behavior in a rendered page**, invisible to a unit test. The UI gate closes
-that — objectively, so it stays a gate the agent can't talk its way past.
+pass*. For UI work that isn't enough: the thing that matters ("the status badge
+carries its success class", "the primary action shows only in the enabled
+state", "the row opens a modal") is **behavior in a rendered page**, invisible to
+a unit test. The UI gate closes that — objectively, so it stays a gate the agent
+can't talk its way past.
 
 ## What it is
 
@@ -59,9 +60,9 @@ Copy `checks/_example.mjs` to a real name. Default-export `async (page, ctx)`;
 
 ```js
 export default async function (page, ctx) {
-  await ctx.goto('/#/feature-config-v2');
+  await ctx.goto('/#/items');
   const badges = await page.$$eval('.ant-tag', (e) => e.map((x) => x.className));
-  if (!badges.some((c) => /ant-tag-green/.test(c))) throw new Error('no green Live badge');
+  if (!badges.some((c) => /ant-tag-green/.test(c))) throw new Error('no success-class badge');
 }
 ```
 
@@ -73,8 +74,14 @@ wrote the feature is testing nothing.
 
 `gate.mjs` (the runner) is **frozen** alongside `verify.sh` (`verify_sum` hashes
 both) — the agent can't neuter the harness. The `checks/*.mjs` are the test
-layer: agent-authored, red-first, protected by the same PROMPT rules + ratchet as
-any test file (never delete/skip/weaken to go green).
+layer: agent-authored, red-first. They can't be silently dropped either — the
+injected verify.sh UI block carries its own **check-count ratchet**
+(`.loop/ui-gate/.check-count`, may grow, never shrink), because the general
+Block-2 ratchet globs test-file names the `.mjs` checks don't match. The runner
+passes when there are zero checks (a repo with no UI stories yet is legitimately
+green), so the ratchet is what stops an agent deleting a red check to fake a
+green gate. Same discipline as any test file: never delete/skip/weaken to go
+green.
 
 ## Faster path (optional)
 

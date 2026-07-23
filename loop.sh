@@ -332,7 +332,7 @@ EOF
   echo "${LOOP_GIT_MODE:-ignored}" > "$MODE_FILE"
   if [ "${LOOP_GIT_MODE:-ignored}" = "tracked" ]; then
     if ! grep -q '^\.loop/logs/' "$PROJECT/.gitignore" 2>/dev/null; then
-      printf '\n# loop-tool runtime artifacts (LOOP_GIT_MODE=tracked)\n.loop/features/*/logs/\n.loop/features/*/REPORT.md\n.loop/test-count\n' >> "$PROJECT/.gitignore"
+      printf '\n# loop-tool runtime artifacts (LOOP_GIT_MODE=tracked)\n.loop/features/*/logs/\n.loop/features/*/REPORT.md\n.loop/test-count\n.loop/ui-gate/.check-count\n.loop/ui-gate/boot.log\n.loop/ui-gate/shots/\n.loop/ui-gate/node_modules/\n' >> "$PROJECT/.gitignore"
       echo "loop: tracked mode — runtime artifacts added to .gitignore"
     fi
   else

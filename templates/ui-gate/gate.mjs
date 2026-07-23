@@ -80,38 +80,44 @@ const browser = await puppeteer.launch({
 });
 
 let failed = 0;
-for (const file of files) {
-  const mod = await import(path.join(checksDir, file));
-  const check = mod.default;
-  if (typeof check !== 'function') {
-    console.error(`  ✗ ${file}: no default-exported async (page, ctx) function`);
-    failed++;
-    continue;
-  }
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1440, height: 900 });
-  const pageErrors = [];
-  page.on('pageerror', (e) => pageErrors.push(String(e)));
-  const ctx = {
-    baseUrl: BASE_URL,
-    goto: (route = '/') =>
-      page.goto(BASE_URL + route, { waitUntil: 'networkidle2', timeout: 45000 }),
-    pageErrors,
-  };
-  try {
-    await check(page, ctx);
-    console.log(`  ✓ ${file}`);
-  } catch (e) {
-    console.error(`  ✗ ${file}: ${e.message}`);
-    failed++;
+try {
+  for (const file of files) {
+    const mod = await import(path.join(checksDir, file));
+    const check = mod.default;
+    if (typeof check !== 'function') {
+      console.error(`  ✗ ${file}: no default-exported async (page, ctx) function`);
+      failed++;
+      continue;
+    }
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
+    const pageErrors = [];
+    page.on('pageerror', (e) => pageErrors.push(String(e)));
+    const ctx = {
+      baseUrl: BASE_URL,
+      goto: (route = '/') =>
+        page.goto(BASE_URL + route, { waitUntil: 'networkidle2', timeout: 45000 }),
+      pageErrors,
+    };
     try {
-      await page.screenshot({ path: path.join(SHOT_DIR, file.replace(/\.mjs$/, '.fail.png')) });
-    } catch {}
-  } finally {
-    await page.close();
+      await check(page, ctx);
+      console.log(`  ✓ ${file}`);
+    } catch (e) {
+      console.error(`  ✗ ${file}: ${e.message}`);
+      failed++;
+      try {
+        await page.screenshot({ path: path.join(SHOT_DIR, file.replace(/\.mjs$/, '.fail.png')) });
+      } catch {}
+    } finally {
+      await page.close();
+    }
   }
+} finally {
+  // Always tear down Chrome, even if a check module fails to import or a page
+  // fails to open outside the per-check try — otherwise the process exits with
+  // an orphaned browser.
+  await browser.close();
 }
-await browser.close();
 
 if (failed) {
   console.error(`UI gate: ${failed}/${files.length} check(s) FAILED`);
