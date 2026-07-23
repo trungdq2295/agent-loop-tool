@@ -69,17 +69,42 @@ Protocol, in order:
 
 ## UI stories (browser tests) — extra rules
 
-- Red-first applies unchanged: the acceptance e2e spec must FAIL
-  (element absent, wrong text) before you implement.
-- Locate by role/label (`getByRole`, `getByLabel`, `getByText`) — never
-  CSS/XPath selectors; they couple the test to markup, not behavior.
-- NEVER `waitForTimeout`/sleep — rely on the framework's auto-waiting
-  assertions. A test needing a sleep is asserting the wrong signal.
-- NEVER add screenshot-baseline assertions (`toHaveScreenshot`): a
-  baseline generated on first run passes without ever failing — it
-  proves nothing and violates red-first. Assert behavior, not pixels.
-- Aesthetic criteria ("looks right") are not yours to verify — if a
-  story seems to demand one, that's a QUESTIONS.md case, not a test.
+If this repo has a `.loop/ui-gate/` dir, that IS the browser gate for UI
+stories — your acceptance test is a check file there:
+
+- Write one check per story under `.loop/ui-gate/checks/*.mjs`. Copy
+  `checks/_example.mjs` to a real name; default-export an
+  `async (page, ctx)` function that THROWS on failure (`ctx.goto(route)`
+  navigates `UI_GATE_BASE_URL + route`). Files starting with `_` are
+  skipped by the runner.
+- `.loop/ui-gate/gate.mjs` is the FROZEN runner (hashed into
+  `criteria.sum` like `verify.sh`). NEVER edit it — you write checks, not
+  the harness. Do not touch `node_modules/`, `shots/`, or the verify.sh
+  UI block either.
+- Boot facts (`UI_BOOT_CMD`, `UI_GATE_BASE_URL`) live in the verify.sh UI
+  block + CLAUDE.md `## Loop UI gate` — read them, don't re-derive. If a
+  fact is missing/wrong, that's a QUESTIONS.md case, not a guess.
+
+Whichever browser mechanism the repo uses, these hold:
+
+- Red-first applies unchanged: the check/spec must FAIL (element absent,
+  wrong text/class) before you implement, and go green after. A check
+  that passed before the feature existed tests nothing — fix the check.
+- Assert SEMANTICS / INTENT: role, text/label, intent-encoding class
+  (`ant-tag-green` = "this badge is Live" — the class IS the
+  requirement), computed style in the real browser
+  (`getComputedStyle(el).color`), or behavior (click → modal, nav → URL
+  changes). Where a framework offers them, prefer role/label locators
+  (`getByRole`, `getByLabel`, `getByText`) over raw markup coupling.
+- NEVER assert pixels: no screenshot baselines (`toHaveScreenshot`), DOM
+  snapshots (`toMatchSnapshot`), or exact padding/margins. They pass on
+  first run without ever failing — regression theater, breaks red-first.
+- NEVER `waitForTimeout`/sleep — use the framework's auto-waiting
+  assertions (`waitForSelector`, etc.). A test needing a sleep asserts
+  the wrong signal.
+- Aesthetic criteria ("looks right", "matches the mockup") are NOT
+  reducible and NOT yours to verify — if a story seems to demand one,
+  that's a QUESTIONS.md case, not a test.
 
 ## Before your session ends — ALWAYS, even if unfinished
 

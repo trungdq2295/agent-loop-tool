@@ -1,2 +1,5 @@
 .idea/
 state/
+
+# spike puppeteer harness (redundant — gate installs into .loop/ui-gate)
+harness/
