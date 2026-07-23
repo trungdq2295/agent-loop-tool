@@ -76,7 +76,12 @@ command -v jq >/dev/null     || die "jq required (brew install jq)"
 command -v claude >/dev/null || die "claude CLI required"
 
 criteria_sum() { jq -S '[.stories[].acceptance]' "$PRD_JSON" | shasum -a 256 | cut -d' ' -f1; }
-verify_sum()   { shasum -a 256 "$VERIFY" | cut -d' ' -f1; }
+verify_sum()   {
+  # Freeze the exam script AND the UI-gate runner (both are harness the agent
+  # must not touch). Per-story ui-gate/checks/*.mjs are the test layer (agent-
+  # authored red-first, like any test file) and are NOT frozen here.
+  { cat "$VERIFY"; if [ -f "$LOOP_DIR/ui-gate/gate.mjs" ]; then cat "$LOOP_DIR/ui-gate/gate.mjs"; fi; } | shasum -a 256 | cut -d' ' -f1
+}
 
 # D10 git mode, recorded at init in an explicit marker — NEVER inferred from
 # .gitignore at runtime: the owner's uncommitted .gitignore can get shelved
@@ -283,12 +288,51 @@ cmd_init() {
     CLAUDE_SEEDED="1"
   fi
 
+  # UI gate (optional): a browser project gets a real-browser behavioral gate.
+  # Generic mechanism only — every app-specific fact (port, boot command, route,
+  # chrome) is REPO KNOWLEDGE the author fills in verify.sh's UI block + CLAUDE.md.
+  local UI_SCAFFOLDED="" PUP_OK=""
+  if [ -f "$PROJECT/package.json" ] && \
+     jq -e '((.dependencies // {}) + (.devDependencies // {})) | keys
+            | any(test("^(react-scripts|next|vite|@angular/core|vue|svelte|@vue/cli-service|@remix-run/react|gatsby)$"))' \
+        "$PROJECT/package.json" >/dev/null 2>&1; then
+    mkdir -p "$LOOP_DIR/ui-gate/checks"
+    cp "$TOOL_DIR/templates/ui-gate/gate.mjs" "$LOOP_DIR/ui-gate/gate.mjs"
+    cp "$TOOL_DIR/templates/ui-gate/checks/_example.mjs" "$LOOP_DIR/ui-gate/checks/_example.mjs"
+    # inject the boot→wait→gate→teardown block into verify.sh, before Block 2
+    awk -v bf="$TOOL_DIR/templates/ui-gate/verify-block.sh" '
+      /^# ── Block 2:/ && !d { while ((getline line < bf) > 0) print line; print ""; d=1 }
+      { print }
+    ' "$LOOP_DIR/verify.sh" > "$LOOP_DIR/verify.sh.tmp" && mv "$LOOP_DIR/verify.sh.tmp" "$LOOP_DIR/verify.sh"
+    chmod +x "$LOOP_DIR/verify.sh"
+    # self-contained puppeteer-core, local to the gate (gitignored with .loop/)
+    if ( cd "$LOOP_DIR/ui-gate" \
+         && printf '{"name":"loop-ui-gate","private":true}\n' > package.json \
+         && npm i puppeteer-core@21 --no-audit --no-fund >/dev/null 2>&1 ); then PUP_OK=1; fi
+    # repo-knowledge contract: append when WE seeded CLAUDE.md, else print for the human
+    UI_CONTRACT=$(cat <<'EOF'
+
+## Loop UI gate
+Browser behavioral gate (`.loop/ui-gate/`). Fill these repo facts here AND in
+the `.loop/verify.sh` UI block:
+- **boot**: <command that starts the app>            (verify.sh `UI_BOOT_CMD`)
+- **url**:  http://localhost:<port>                  (verify.sh `UI_GATE_BASE_URL`)
+- **route(s)**: <paths under test, e.g. /#/foo>
+- **chrome**: auto-detected; set `UI_GATE_CHROME` to override.
+Checks = `.loop/ui-gate/checks/*.mjs` (per-story, red-first). Assert semantics/
+intent (role, text, intent-class, computed color, behavior) — NEVER pixels.
+EOF
+)
+    if [ -n "$CLAUDE_SEEDED" ]; then printf '%s\n' "$UI_CONTRACT" >> "$PROJECT/CLAUDE.md"; fi
+    UI_SCAFFOLDED=1
+  fi
+
   # D10: invisible to git by default — one ignore line, zero repo noise.
   # LOOP_GIT_MODE=tracked keeps the v2 baton-in-git behavior.
   echo "${LOOP_GIT_MODE:-ignored}" > "$MODE_FILE"
   if [ "${LOOP_GIT_MODE:-ignored}" = "tracked" ]; then
     if ! grep -q '^\.loop/logs/' "$PROJECT/.gitignore" 2>/dev/null; then
-      printf '\n# loop-tool runtime artifacts (LOOP_GIT_MODE=tracked)\n.loop/features/*/logs/\n.loop/features/*/REPORT.md\n.loop/test-count\n' >> "$PROJECT/.gitignore"
+      printf '\n# loop-tool runtime artifacts (LOOP_GIT_MODE=tracked)\n.loop/features/*/logs/\n.loop/features/*/REPORT.md\n.loop/test-count\n.loop/ui-gate/.check-count\n.loop/ui-gate/boot.log\n.loop/ui-gate/shots/\n.loop/ui-gate/node_modules/\n' >> "$PROJECT/.gitignore"
       echo "loop: tracked mode — runtime artifacts added to .gitignore"
     fi
   else
@@ -313,6 +357,14 @@ cmd_init() {
     echo "loop: no CLAUDE.md found — seeded a stub at $PROJECT/CLAUDE.md. Fill it"
     echo "      (how the repo tests/builds, conventions, what it does NOT do); loop"
     echo "      agents auto-load it and conform to it. The PRD session helps enrich it."
+  fi
+  if [ -n "$UI_SCAFFOLDED" ]; then
+    echo "loop: UI project detected — scaffolded .loop/ui-gate/ + injected verify.sh UI block."
+    echo "      FILL repo knowledge: verify.sh UI block (UI_BOOT_CMD, UI_GATE_BASE_URL) + CLAUDE.md '## Loop UI gate'."
+    [ -n "$PUP_OK" ] || echo "      NOTE: puppeteer-core install failed — run: (cd .loop/ui-gate && npm i puppeteer-core@21)"
+    if [ -z "$CLAUDE_SEEDED" ]; then
+      echo "      (CLAUDE.md exists — add a '## Loop UI gate' section by hand; see docs/ui-gate.md)"
+    fi
   fi
   echo "loop: then run: loop.sh prd $PROJECT"
 }
